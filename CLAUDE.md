@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-A Uzebox core for the Karabas Go, Mini and Mini G boards (Xilinx Spartan-6 XC6SLX25, ISE 14.7, XST). Uzebox is an ATmega644 game console at 28.63636 MHz with no frame buffer: the games draw each line by cycle-counted writes to PORTC, so the AVR must be cycle-exact. No Uzebox on an FPGA existed when this started (2026-11-19). Docs, in Russian: `docs/PLAN.md` (facts, variants, decisions, phases). The variants of PLAN.md section 3 wait for the user's choice; record the choice in its section 4 and follow the phases.
+A Uzebox core for the Karabas Go, Mini and Mini G boards (Xilinx Spartan-6 XC6SLX25, ISE 14.7, XST). Uzebox is an ATmega644 game console at 28.63636 MHz with no frame buffer: the games draw each line by cycle-counted writes to PORTC, so the AVR must be cycle-exact. No Uzebox on an FPGA existed when this started (2026-11-19). Docs, in Russian: `docs/PLAN.md` (facts, variants, decisions, phases). User decisions (2026-11-19, PLAN.md section 4): A = own cycle-exact ATmega644 core (uzem is the oracle, other AVR cores reference only), V1 = line doubler 1:1 per CPU cycle, 1440x480 at 57.27 MHz (2x CPU), M2 = 64 KB program flash in the external 2Mx16 SRAM (fallback M1 = BRAM), L1 = .uze loaded via the OSD (Bootloader5 later). Record a changed decision in PLAN.md.
 
 ## Layout
 
