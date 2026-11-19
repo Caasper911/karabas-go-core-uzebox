@@ -4,7 +4,7 @@
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 //
 // Usage: tb_lockstep <game.hex|game.uze> [-n frames] [-p png_prefix] [-e every_n_frames] [-s skip_frames]
-//        [-q] (no lockstep: RTL only, fast)
+//        [-q] (no lockstep: RTL only, fast) [-a] (autoplay: random pad 1 buttons every 20 frames)
 
 #define SDL_MAIN_HANDLED
 #include "avr8_open.h"
@@ -143,6 +143,7 @@ static int eeprom_halt(uint16_t pc) {
 	return 0;
 }
 static bool lockstep = true;
+static bool autoplay = false;
 
 static uint8_t rtl_reg(int i) {
 	return (top->rootp->atmega644__DOT__cpu__DOT__rf[i / 4] >> ((i % 4) * 8)) & 0xFF;
@@ -160,6 +161,7 @@ int main(int argc, char **argv) {
 		else if (!strcmp(argv[i], "-e") && i + 1 < argc) png_every = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-s") && i + 1 < argc) png_skip = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-q")) lockstep = false;
+		else if (!strcmp(argv[i], "-a")) autoplay = true;
 	}
 	if (!png_prefix.empty() && !png_every) png_every = 1;
 
@@ -196,7 +198,16 @@ int main(int argc, char **argv) {
 	uint32_t ring[16]; int rp = 0;
 	// PINx: inputs; PORTB / PORTC / OCR2A: Uzem does not store them; the rest: compared above (own registers)
 	const int io_skip[] = {0x00, 0x03, 0x05, 0x06, 0x08, 0x09, 0x0B, 0x16, 0x1F, 0x20, 0x3D, 0x3E, 0x3F, 0x40, 0x64, 0x65, 0x93};
+	int pad_frame = -1;
+	uint32_t lcg = 12345;
 	while (frames < max_frames) {
+		// autoplay: new pseudo-random SNES buttons on pad 1 every 20 frames (both sides read them from Uzem)
+		if (autoplay && lockstep && frames / 20 != pad_frame) {
+			pad_frame = frames / 20;
+			lcg = lcg * 1103515245u + 12345u;
+			uint32_t mask = (lcg >> 16) & 0x0FFB;            // B Y - Start Up Down Left Right A X L R (no Select)
+			u->buttons[0] = (u->buttons[0] | 0xFFF) & ~mask;
+		}
 		uint32_t upc = u ? u->pc : 0;
 		ring[rp++ & 15] = upc;
 		unsigned int ucy = 0;
@@ -266,6 +277,11 @@ int main(int argc, char **argv) {
 			       u->OCR1AL | (u->OCR1AH << 8), u->OCR1BL | (u->OCR1BH << 8), u->SREG, u->WDTCSR);
 			return 1;
 		}
+		// Uzem keeps no copy of PORTB / PORTC / OCR2A (reads give 0); the ATmega644 reads back what was
+		// written: give Uzem the RTL values (checked through the pixel and the cycle counts)
+		u->PORTB = top->portb;
+		u->PORTC = top->rootp->atmega644__DOT__io__DOT__portc;
+		u->OCR2A = top->ocr2a;
 	}
 	printf("OK: %llu instructions, %llu cycles, %d frames%s\n", (unsigned long long)steps,
 	       (unsigned long long)rtl_cycle, frames, lockstep ? ", RTL == Uzem" : " (RTL only)");

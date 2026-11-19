@@ -67,7 +67,7 @@ wire [7:0] gen_q = gen[io_addr];
 
 // ---------------------------------------------------------------- ports
 reg [7:0] ddrc /* verilator public_flat */;
-reg [7:0] portc;
+reg [7:0] portc /* verilator public_flat */;
 always @(posedge clk) begin
 	if (rst) begin
 		porta <= 8'd0; ddra <= 8'd0; portb <= 8'd0; ddrb <= 8'd0; portc <= 8'd0; ddrc <= 8'd0;
