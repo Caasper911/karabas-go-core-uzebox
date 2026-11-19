@@ -36,6 +36,7 @@ static void sram_eval() {
 // reference: Uzem's window on PORTC / PB0
 static uint8_t linebuf[2048];
 static std::vector<uint8_t> ref(1440 * 224), ref_prev(1440 * 224);
+static uint64_t fper_min = ~0ULL, fper_max = 0;
 static int scanline = -999, ref_frames = 0, vfirst_seen = -1;
 static uint64_t prev_rise = 0, line_start = 0;
 static int prev_pb0 = 0;
@@ -45,7 +46,12 @@ static void ref_tick() {
 	int pb0 = R->uzebox__DOT__portb & 1;
 	if (pb0 && !prev_pb0) {
 		uint64_t el = cyc - prev_rise;
-		if (scanline == -999 && el >= 900 && el <= 920) scanline = -38;
+		if (scanline == -999 && el >= 900 && el <= 920) {
+			scanline = -38;
+			static uint64_t last_fs = 0;
+			if (last_fs) { uint64_t d = cyc - last_fs; if (d < fper_min) fper_min = d; if (d > fper_max) fper_max = d; }
+			last_fs = cyc;
+		}
 		else if (scanline != -999) {
 			if (scanline >= 0 && scanline < 224)
 				for (int i = 0; i < 1440; i++) ref[scanline * 1440 + i] = linebuf[(line_start + 168 + i) & 0x7FF];
@@ -79,6 +85,9 @@ static void check_frame() {
 				const uint8_t *o = &out[((16 + 2 * y + k) * 720 + x) * 3];
 				if (o[0] != r || o[1] != g || o[2] != b) worst++;
 			}
+	static int lock_frame = -1;
+	if (!top->rootp->uzebox__DOT__video__DOT__lock_r) { printf("frame %d: picture not locked yet\n", out_frames); return; }
+	if (lock_frame < 0) { lock_frame = out_frames; printf("frame %d: locked\n", out_frames); }
 	int lit = 0;
 	for (uint8_t p : ref_prev) if (p) lit++;
 	if (!lit) { printf("frame %d: blank (not counted)\n", out_frames); return; }
@@ -170,6 +179,7 @@ int main(int argc, char **argv) {
 		cpu_cycle();
 	}
 	printf("audio: %llu changes, min %d max %d\n", (unsigned long long)snd_changes, (int16_t)snd_min, (int16_t)snd_max);
+	printf("input frame: %llu..%llu cycles (524 x 910 = 476840)\n", (unsigned long long)fper_min, (unsigned long long)fper_max);
 	printf("V_FIRST measured: %d (input line of picture row 0)\n", vfirst_seen);
 	printf("%s: %d frames checked, %d with differences\n", bad || !checked ? "FAIL" : "OK", checked, bad);
 	return bad || !checked || mism;

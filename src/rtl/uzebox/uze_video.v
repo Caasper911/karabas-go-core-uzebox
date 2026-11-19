@@ -1,19 +1,23 @@
 // uze_video.v - the Uzebox picture (PORTC) doubled to 720 x 480 in the CPU clock (variant V3 of
-// docs/PLAN.md, user 2026-11-20: 1440 x 480 at 2x the clock was refused by the monitors): one output
-// pixel per two CPU cycles (the first of the pair, as Uzem draws), 910 x 524 clocks, 31.6 kHz, 60.3 Hz
-// at 28.75 MHz, syncs always present.
+// docs/PLAN.md): one output pixel per two CPU cycles (the first of the pair, as Uzem draws),
+// 910 x 524 clocks, 31.6 kHz, 60.3 Hz at 28.75 MHz.
+//
+// The output timing runs on its own and never jumps (user 2026-11-20: a genlock that realigned the
+// output to the sync of the game made the monitor lose sync, Arkanoid every frame): lines of 910
+// clocks always; frames of 524 lines, 523 or 525 while the picture is pulled into place.
 //
 // Input: hc / vin count the input line (1820 cycles) and frame (262 lines) and run free; they lock to
 // the sync of the kernel (PB0): a rising edge 1820 cycles after the last one starts a line (hc = 0);
 // edges 910 cycles apart are the half lines of the vertical sync: the first one of a frame makes the
-// current line number 0. Picture pixel x of input line vin = the cycle H_FIRST + 2x after the line
-// start (the window of Uzem), x = 0..719, written into bank vin[0] of a two-line buffer.
-// Output: two output lines per input line (the first and second half of hc), so the output is
-// genlocked with no frame buffer; it shows the previous, complete input line from the other bank.
-// Picture row y = input line y + V_FIRST, 224 rows, doubled to 448 lines in the middle of the 480
-// active lines.
-// Output timing (clocks): line 910: hsync 0..61, active 148..867; frame 524: vsync 0..5, active
-// 36..515; picture lines 52..499. hs / vs / de high active, 2 clocks after the counters.
+// current line number 0. Picture pixel x of an input line = the cycle H_FIRST + 2x after its start
+// (the window of Uzem), x = 0..719, written into bank lc of a 4-line ring (lc counts input lines).
+// Output: at the start of each output line the last complete input line is taken (bank lc - 1, its
+// picture row vin - 1 - V_FIRST); a row is shown on the two output lines that start during the next
+// input line. Vertical lock: the output line that first shows row 0 should be O_PIC; if it is later,
+// this frame gets 525 lines (the picture moves up one line per frame), earlier 523, else 524. The
+// length is set at that line, in the same frame (one frame later it overshot: 26112003 hunted, period 3).
+// Output timing (clocks): line 910: hsync 0..61, active 148..867; frame: vsync 0..5, active 36..515,
+// picture lines 52..499 once locked. hs / vs / de high active.
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 
 module uze_video #(
@@ -29,20 +33,18 @@ module uze_video #(
 	output reg        hs,
 	output reg        vs,
 	output reg        de,
-	output            frame_start     // one cycle at line 0 (debug, test bench)
+	output            frame_start,    // one cycle at input line 0 (debug, test bench)
+	output            locked          // the picture is in place (debug, test bench)
 );
 
 localparam H_TOTAL = 1820, H_HALF = 910;
-localparam O_TOTAL = 524, O_ACT = 36, O_PIC = 52;
+localparam O_HTOTAL = 910, O_VTOTAL = 524, O_ACT = 36, O_PIC = 52;
 localparam HS_END = 62, HA = 148;
-// output line of input line 0 = (O_PIC - 2 * (V_FIRST + 1)) mod 524: picture row 0 (input line
-// V_FIRST, shown during input line V_FIRST + 1) on output line O_PIC
-localparam integer VOFS_I = O_PIC - 2 * (V_FIRST + 1);
-localparam [9:0] VOFS = (VOFS_I % O_TOTAL + O_TOTAL) % O_TOTAL;
 
 // ---------------------------------------------------------------- input
 reg [10:0] hc /* verilator public_flat */ = 11'd0;
 reg [8:0]  vin /* verilator public_flat */ = 9'd0;
+reg [1:0]  lc = 2'd0;            // input lines mod 4: the bank being written
 reg [11:0] per = 12'd0;          // cycles since the last rise of PB0
 reg        sync_d = 1'b0;
 reg        in_vs = 1'b0;         // inside the half lines of the vertical sync
@@ -50,6 +52,8 @@ wire       rise = sync & ~sync_d;
 wire       full = rise && per == H_TOTAL - 1;
 wire       half = rise && per == H_HALF - 1;
 wire       wrap = hc == H_TOTAL - 1;
+wire       realign = full && hc != 11'd0;
+wire       line_end = realign || wrap;
 assign frame_start = half && !in_vs;
 
 always @(posedge clk) begin
@@ -59,12 +63,10 @@ always @(posedge clk) begin
 	if (rst) begin
 		hc <= 11'd0; vin <= 9'd0; in_vs <= 1'b0;
 	end else begin
-		if (full && hc != 11'd0) begin                  // line start out of phase: realign
-			hc <= 11'd1;
+		hc <= realign ? 11'd1 : wrap ? 11'd0 : hc + 11'd1;
+		if (line_end) begin
 			vin <= (vin == 9'd261) ? 9'd0 : vin + 9'd1;
-		end else begin
-			hc <= wrap ? 11'd0 : hc + 11'd1;
-			if (wrap) vin <= (vin == 9'd261) ? 9'd0 : vin + 9'd1;
+			lc <= lc + 2'd1;
 		end
 		if (half && !in_vs) vin <= 9'd0;                // first half line: this is line 0
 		if (half) in_vs <= 1'b1;
@@ -72,29 +74,57 @@ always @(posedge clk) begin
 	end
 end
 
-// two-line buffer: bank vin[0], 720 pixels (1024 bytes) each, one RAMB16
-reg  [7:0]  lbuf [0:2047];
+// 4-line ring: bank lc, 720 pixels (1024 bytes) each, two RAMB16
+reg  [7:0]  lbuf [0:4095];
 wire [10:0] wx = hc - H_FIRST;
 wire        wen = hc >= H_FIRST && hc < H_FIRST + 1440 && !wx[0];
 always @(posedge clk)
-	if (wen) lbuf[{vin[0], wx[10:1]}] <= pixel;
+	if (wen) lbuf[{lc, wx[10:1]}] <= pixel;
 
-// ---------------------------------------------------------------- output
-wire        hh = hc >= H_HALF;
-wire [9:0]  ho = hh ? hc - H_HALF : hc;                     // 0..909
-wire [9:0]  lo = {vin, hh};                                 // 0..523
-wire [10:0] vsum = lo + VOFS;
-wire [9:0]  vo = (vsum >= O_TOTAL) ? vsum - O_TOTAL : vsum;
-wire [8:0]  row = vin - 9'd1 - V_FIRST;                     // input line shown, as a picture row
-wire        pic = vo >= O_PIC && vo < O_PIC + 448 && row < 9'd224;
+// ---------------------------------------------------------------- output timing (free running)
+reg  [9:0] ho = 10'd0;
+reg  [9:0] vo = 10'd0;
+reg  [9:0] vtot = O_VTOTAL;      // lines of the current frame: 523, 524, 525
+reg  [1:0] rbank = 2'd0;
+reg  [8:0] rrow = 9'h1FF;        // picture row of the current output line (>= 224: none)
+reg  [8:0] prow = 9'h1FF;
+reg        lock_r /* verilator public_flat */ = 1'b0;
+wire       hend = ho == O_HTOTAL - 1;
+wire       vend = vo >= vtot - 10'd1;     // >=: a frame shortened at its last line still ends
+wire [8:0] vprev = (vin == 9'd0) ? 9'd261 : vin - 9'd1;
+assign locked = lock_r;
+
+always @(posedge clk) begin
+	ho <= hend ? 10'd0 : ho + 10'd1;
+	if (hend) begin
+		vo <= vend ? 10'd0 : vo + 10'd1;
+		if (vend) vtot <= O_VTOTAL;                       // 524 unless row 0 is seen off place
+	end
+	if (ho == 10'd0) begin
+		// the last complete input line; vin is the line being written (lc in step with it)
+		rbank <= lc - 2'd1;
+		rrow <= vprev - V_FIRST;
+		prow <= rrow;
+		if (vprev - V_FIRST == 9'd0 && rrow != 9'd0) begin      // the first line showing row 0
+			if (vo == O_PIC) lock_r <= 1'b1;
+			else begin
+				lock_r <= 1'b0;
+				vtot <= (vo > O_PIC && vo < O_PIC + 262) ? O_VTOTAL + 1 : O_VTOTAL - 1;
+			end
+		end
+	end
+end
+
+// ---------------------------------------------------------------- output pixels
 wire        act_h = ho >= HA && ho < HA + 720;
 wire        act_v = vo >= O_ACT && vo < O_ACT + 480;
+wire        pic = rrow < 9'd224;
 wire [9:0]  rx = ho - HA;
 
 reg  [7:0] px;
 reg        hs1, vs1, de1, pic1;
 always @(posedge clk) begin
-	px <= lbuf[{~vin[0], rx}];
+	px <= lbuf[{rbank, rx}];
 	hs1 <= ho < HS_END;
 	vs1 <= vo < 10'd6;
 	de1 <= act_h && act_v;
