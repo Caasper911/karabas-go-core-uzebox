@@ -4,7 +4,7 @@
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 //
 // Usage: tb_lockstep <game.hex|game.uze> [-n frames] [-p png_prefix] [-e every_n_frames] [-s skip_frames]
-//        [-q] (no lockstep: RTL only, fast) [-a] (autoplay: random pad 1 buttons every 20 frames)
+//        [-q] (no lockstep: RTL only, fast) [-a] (autoplay: a random pad 1 button for 5 of every 20 frames)
 
 #define SDL_MAIN_HANDLED
 #include "avr8_open.h"
@@ -201,11 +201,16 @@ int main(int argc, char **argv) {
 	int pad_frame = -1;
 	uint32_t lcg = 12345;
 	while (frames < max_frames) {
-		// autoplay: new pseudo-random SNES buttons on pad 1 every 20 frames (both sides read them from Uzem)
-		if (autoplay && lockstep && frames / 20 != pad_frame) {
-			pad_frame = frames / 20;
-			lcg = lcg * 1103515245u + 12345u;
-			uint32_t mask = (lcg >> 16) & 0x0FFB;            // B Y - Start Up Down Left Right A X L R (no Select)
+		// autoplay: every 20 frames one pseudo-random SNES button of pad 1 is held for 5 frames, then all are
+		// released (games wait for the release); both sides read the pad from Uzem
+		if (autoplay && lockstep && frames / 5 != pad_frame) {
+			pad_frame = frames / 5;
+			uint32_t mask = 0;
+			if (pad_frame % 4 == 0) {
+				static const int btn[] = {3, 8, 0, 4, 5, 6, 7, 6, 7, 8, 9, 1, 10, 11};  // Start A B U D L R L R A X Y L R
+				lcg = lcg * 1103515245u + 12345u;
+				mask = 1u << btn[(lcg >> 16) % (sizeof btn / sizeof btn[0])];
+			}
 			u->buttons[0] = (u->buttons[0] | 0xFFF) & ~mask;
 		}
 		uint32_t upc = u ? u->pc : 0;
