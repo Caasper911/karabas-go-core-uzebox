@@ -60,3 +60,5 @@ src/par_usage_statistics.html
 src/roms/*.uze
 src/roms/*.hex
 __pycache__/
+src/sim/build/
+src/synth/build/

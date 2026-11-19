@@ -1,0 +1,3 @@
+# timing check of the ATmega644 alone: 57.27 MHz (2x the Uzebox clock) to see the margin
+NET "clk" TNM_NET = "clk";
+TIMESPEC "TS_clk" = PERIOD "clk" 17.4 ns HIGH 50%;
