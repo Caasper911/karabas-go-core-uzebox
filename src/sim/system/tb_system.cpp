@@ -111,8 +111,12 @@ static void pix_capture() {
 }
 
 // one CPU cycle (also the pixel clock)
+static uint64_t snd_changes = 0; static uint16_t snd_last = 0, snd_min = 0xFFFF, snd_max = 0;
 static void cpu_cycle() {
 	top->clk = 1; top->eval(); sram_eval(); top->eval();
+	if (top->audio != snd_last) { snd_changes++; snd_last = top->audio; }
+	if ((int16_t)top->audio < (int16_t)snd_min) snd_min = top->audio;
+	if ((int16_t)top->audio > (int16_t)snd_max) snd_max = top->audio;
 	cyc++; ref_tick(); pix_capture();
 	top->clk = 0; top->eval(); sram_eval(); top->eval();
 }
@@ -165,6 +169,7 @@ int main(int argc, char **argv) {
 		}
 		cpu_cycle();
 	}
+	printf("audio: %llu changes, min %d max %d\n", (unsigned long long)snd_changes, (int16_t)snd_min, (int16_t)snd_max);
 	printf("V_FIRST measured: %d (input line of picture row 0)\n", vfirst_seen);
 	printf("%s: %d frames checked, %d with differences\n", bad || !checked ? "FAIL" : "OK", checked, bad);
 	return bad || !checked || mism;

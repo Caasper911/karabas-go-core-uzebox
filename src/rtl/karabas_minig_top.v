@@ -302,8 +302,9 @@ kg_l2_osd_overlay osd (
 	.rgb_o(osd_rgb), .hs_o(osd_hs), .vs_o(osd_vs), .de_o(osd_de)
 );
 
-// the sound: the 8-bit sample of the kernel (15.7 kHz) to the PCM5102 and the HDMI audio, mono
-kg_pcm5102 #(.DIV_BITS(1)) dac (.clk(clk_cpu), .reset(areset), .left(snd), .right(snd),
+// the sound: the 8-bit sample of the kernel (15.7 kHz) to the PCM5102 and the HDMI audio, mono.
+// PCM5102: bck = 28.75 MHz / 16 = 1.8 MHz, 56 kHz frames (DIV_BITS 1 gave 112 kHz: no sound, 26112001)
+kg_pcm5102 #(.DIV_BITS(2)) dac (.clk(clk_cpu), .reset(areset), .left(snd), .right(snd),
 	.din(DAC_DAT), .bck(DAC_BCK), .lrck(DAC_WS));
 audio_peaks #(.PERIOD_BITS(20)) peaks (.clk(clk_cpu), .audio_l(snd), .audio_r(snd),
 	.cmd_wr(matrix_cmd_wr), .cmd(matrix_cmd));
