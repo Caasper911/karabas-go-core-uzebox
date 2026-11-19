@@ -1,5 +1,5 @@
 // uzebox.v - the Uzebox console without the board: ATmega644 (program memory in the board SRAM), the
-// .uze loader, two SNES pads, the 1440 x 480 video and the 8-bit sound.
+// .uze loader, two SNES pads, the 720 x 480 video (in clk) and the 8-bit sound.
 //
 // The CPU is held in reset until a game is loaded (an FL load of a .uze, kind 2), while a load runs and
 // while `reset` is high (OSD Reset). Sound: the OCR2A sample the kernel writes once per line
@@ -10,7 +10,6 @@ module uzebox #(
 	parameter V_FIRST = 30
 ) (
 	input             clk,            // CPU clock (28.75 MHz)
-	input             clk_pix,        // 2 x clk, same PLL
 	input             areset,         // clk domain
 	input             reset,          // OSD reset, clk domain
 
@@ -82,7 +81,7 @@ uze_pads pads (.clk(clk), .porta(porta), .joy_l(joy_l), .joy_r(joy_r), .kbd(kbd)
 
 uze_video #(.V_FIRST(V_FIRST)) video (
 	.clk(clk), .rst(areset), .pixel(cpu_rst ? 8'd0 : pixel), .sync(portb[0]),
-	.clk_pix(clk_pix), .rgb(rgb), .hs(hs), .vs(vs), .de(de), .frame_start()
+.rgb(rgb), .hs(hs), .vs(vs), .de(de), .frame_start()
 );
 
 // ---------------------------------------------------------------- sound

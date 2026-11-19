@@ -3,12 +3,12 @@
 
 /*
  Uzebox core for Karabas Mini rev.G (HDMI): uzebox.v (ATmega644 with its program memory in the board
- SRAM, the .uze loader, SNES pads, 1440 x 480 video, sound) and the board: PLL, MCU link v2, OSD, HDMI,
+ SRAM, the .uze loader, SNES pads, 720 x 480 video, sound) and the board: PLL, MCU link v2, OSD, HDMI,
  PCM5102, the LED matrix level meters.
 
  Clocks: one PLL, VCO 575 MHz (50 / 2 * 23): clk_cpu 28.75 MHz (the Uzebox has 28.636: 0.4 % fast,
- a frame of 60.29 Hz; also the MCU link), clk_pix 57.5 MHz (2 x clk_cpu: the doubled video, the OSD,
- HDMI), clk_hdmi / clk_hdmi_n 287.5 MHz; FT_CLK_OUT = clk_cpu / 4 (7.2 MHz).
+ a frame of 60.29 Hz; also the pixel clock of the 720 x 480 video, the OSD, HDMI and the MCU link),
+ clk_hdmi / clk_hdmi_n 143.75 MHz; FT_CLK_OUT = clk_cpu / 4 (7.2 MHz).
  OSD items (index = position in core.json): 0 Game (FL slot 0, .uze), 1 Reset (F12).
 */
 
@@ -148,13 +148,13 @@ kg_pll #(
 	.DIVCLK_DIVIDE(2),       // PFD 25 MHz
 	.CLKFBOUT_MULT(23),      // VCO 575 MHz
 	.CLKOUT0_DIVIDE(20),     // clk_cpu 28.75 MHz
-	.CLKOUT1_DIVIDE(10),     // clk_pix 57.5 MHz
-	.CLKOUT2_DIVIDE(2),      // clk_hdmi 287.5 MHz
-	.CLKOUT3_DIVIDE(2),      // clk_hdmi_n 287.5 MHz, 180 degrees
-	.CLKOUT3_PHASE(180.0),
+	.CLKOUT1_DIVIDE(4),      // clk_hdmi 143.75 MHz
+	.CLKOUT2_DIVIDE(4),      // clk_hdmi_n 143.75 MHz, 180 degrees
+	.CLKOUT2_PHASE(180.0),
+	.CLKOUT3_DIVIDE(20),
 	.CLKOUT4_DIVIDE(20),
 	.CLKOUT5_DIVIDE(20),
-	.BUFG_MASK(6'b001111)
+	.BUFG_MASK(6'b000111)
 ) pll (
 	.clk_in(CLK_50MHZ),
 	.rst(1'b0),
@@ -162,14 +162,12 @@ kg_pll #(
 	.locked(pll_locked)
 );
 wire clk_cpu = pll_clk[0];
-wire clk_pix = pll_clk[1];
-wire clk_hdmi = pll_clk[2];
-wire clk_hdmi_n = pll_clk[3];
+wire clk_hdmi = pll_clk[1];
+wire clk_hdmi_n = pll_clk[2];
 
 (* KEEP = "TRUE" *) wire areset_async = ~pll_locked;
-wire areset, areset_pix;
+wire areset;
 kg_sync #(.W(1), .STAGES(2), .INIT(1'b1)) sync_areset (.clk(clk_cpu), .d(areset_async), .q(areset));
-kg_sync #(.W(1), .STAGES(2), .INIT(1'b1)) sync_areset_pix (.clk(clk_pix), .d(areset_async), .q(areset_pix));
 
 // FT_CLK_OUT: clk_cpu / 4 (the FT812 needs a clock on Mini G, always)
 reg [1:0] ft_div = 2'd0;
@@ -280,7 +278,7 @@ wire [15:0] snd;
 wire [15:0] dbg_pc;
 
 uzebox console (
-	.clk(clk_cpu), .clk_pix(clk_pix), .areset(areset), .reset(sw_reset),
+	.clk(clk_cpu), .areset(areset), .reset(sw_reset),
 	.ld_start(ld_start & ld_game), .ld_active(ld_active & ld_game), .ld_end(ld_end & ld_game),
 	.ld_wr(ld_wr & ld_game), .ld_addr(ld_addr), .ld_data(ld_data),
 	.joy_l(joy_l), .joy_r(joy_r), .kbd(kbd),
@@ -299,7 +297,7 @@ kg_l2_osd_overlay osd (
 	.osd_fg(osd_fg), .osd_bg(osd_bg), .osd_alpha(osd_alpha), .osd_px(osd_px), .osd_py(osd_py),
 	.osd_pw(osd_pw), .osd_ph(osd_ph), .osd_place(osd_place), .osd_zoom(osd_zoom),
 	.icon_on(8'd0), .icon_act(8'd0),
-	.clk(clk_pix),
+	.clk(clk_cpu),
 	.rgb_i(vid_rgb), .hs_i(vid_hs), .vs_i(vid_vs), .de_i(vid_de),
 	.rgb_o(osd_rgb), .hs_o(osd_hs), .vs_o(osd_vs), .de_o(osd_de)
 );
@@ -309,27 +307,27 @@ kg_pcm5102 #(.DIV_BITS(1)) dac (.clk(clk_cpu), .reset(areset), .left(snd), .righ
 	.din(DAC_DAT), .bck(DAC_BCK), .lrck(DAC_WS));
 audio_peaks #(.PERIOD_BITS(20)) peaks (.clk(clk_cpu), .audio_l(snd), .audio_r(snd),
 	.cmd_wr(matrix_cmd_wr), .cmd(matrix_cmd));
-// 48 kHz strobe for the HDMI audio: + 48 per clock of 57.5 MHz modulo 57500
+// 48 kHz strobe for the HDMI audio: + 48 per clock of 28.75 MHz modulo 28750
 reg [15:0] hacc = 16'd0;
 reg aud_stb = 1'b0;
-always @(posedge clk_pix) begin
+always @(posedge clk_cpu) begin
 	aud_stb <= 1'b0;
-	if (hacc >= 16'd57452) begin hacc <= hacc + 16'd48 - 16'd57500; aud_stb <= 1'b1; end
+	if (hacc >= 16'd28702) begin hacc <= hacc + 16'd48 - 16'd28750; aud_stb <= 1'b1; end
 	else hacc <= hacc + 16'd48;
 end
 
 reg dvi_only_p = 1'b0;
-always @(posedge clk_pix) dvi_only_p <= dvi_only;
+always @(posedge clk_cpu) dvi_only_p <= dvi_only;
 reg hdmi_hs = 1'b1, hdmi_vs = 1'b1, hdmi_de = 1'b0;
 reg [23:0] hdmi_rgb = 24'd0;
-always @(posedge clk_pix) begin
+always @(posedge clk_cpu) begin
 	hdmi_hs <= ~osd_hs;
 	hdmi_vs <= ~osd_vs;
 	hdmi_de <= osd_de;
 	hdmi_rgb <= osd_rgb;
 end
 hdmi_tx #(.SAMPLE_FREQ(48000)) hdmi (
-	.clk(clk_pix), .sclk(clk_hdmi), .sclk_n(clk_hdmi_n), .reset(areset_pix),
+	.clk(clk_cpu), .sclk(clk_hdmi), .sclk_n(clk_hdmi_n), .reset(areset),
 	.rgb(hdmi_rgb), .vsync(hdmi_vs), .hsync(hdmi_hs), .de(hdmi_de),
 	.audio_en(~dvi_only_p), .audio_l({ snd, 8'h00 }), .audio_r({ snd, 8'h00 }), .audio_clk(aud_stb),
 	.tx_clk_n(TMDS_N[3]), .tx_clk_p(TMDS_P[3]), .tx_d_n(TMDS_N[2:0]), .tx_d_p(TMDS_P[2:0])

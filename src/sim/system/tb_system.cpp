@@ -1,6 +1,6 @@
 // tb_system.cpp - the whole console (uzebox.v) with a model of the async board SRAM: loads a .uze through
 // the LD_* loader ports (as kg_mcu2 does: a byte every 8 CPU clocks), runs it and checks the video
-// output (1440 x 480 window, the doubled picture) against a reference frame taken from PORTC / PB0 the
+// output (720 x 480 window, the doubled picture: pixel x = cycle 168 + 2x) against a reference frame taken from PORTC / PB0 the
 // way Uzem does (picture x = cycle 168 + x after the rise of PB0, rows from the 38th line after the
 // first half line). Saves output frames as PNG. Also finds V_FIRST (the input line of picture row 0).
 // karabas-go-core-uzebox, GPL-3.0-or-later.
@@ -60,7 +60,7 @@ static void ref_tick() {
 }
 
 // output capture (pixel clock)
-static std::vector<uint8_t> out(1440 * 480 * 3);
+static std::vector<uint8_t> out(720 * 480 * 3);
 static int ox = 0, oy = 0, out_frames = 0, prev_vs = 0, prev_de = 0;
 static std::string png_prefix;
 static int png_every = 0;
@@ -71,12 +71,12 @@ static void check_frame() {
 	int worst = 0;
 	for (int y = 0; y < 224; y++)
 		for (int k = 0; k < 2; k++)
-			for (int x = 0; x < 1440; x++) {
-				uint8_t p = ref_prev[y * 1440 + x];
+			for (int x = 0; x < 720; x++) {
+				uint8_t p = ref_prev[y * 1440 + 2 * x];
 				uint8_t r = ((p & 7) << 5) | ((p & 7) << 2) | ((p & 7) >> 1);
 				uint8_t g = (((p >> 3) & 7) << 5) | (((p >> 3) & 7) << 2) | (((p >> 3) & 7) >> 1);
 				uint8_t b = ((p >> 6) & 3) * 0x55;
-				const uint8_t *o = &out[((16 + 2 * y + k) * 1440 + x) * 3];
+				const uint8_t *o = &out[((16 + 2 * y + k) * 720 + x) * 3];
 				if (o[0] != r || o[1] != g || o[2] != b) worst++;
 			}
 	int lit = 0;
@@ -95,14 +95,14 @@ static void pix_capture() {
 			if (ref_frames >= 2) check_frame();
 			if (!png_prefix.empty() && png_every && out_frames % png_every == 0) {
 				char n[512]; snprintf(n, sizeof n, "%s_%04d.png", png_prefix.c_str(), out_frames);
-				write_png(n, out.data(), 1440, 480);
+				write_png(n, out.data(), 720, 480);
 			}
 		}
 		oy = 0;
 	}
 	if (de) {
-		if (ox < 1440 && oy < 480) {
-			uint8_t *o = &out[(oy * 1440 + ox) * 3];
+		if (ox < 720 && oy < 480) {
+			uint8_t *o = &out[(oy * 720 + ox) * 3];
 			o[0] = top->rgb >> 16; o[1] = top->rgb >> 8; o[2] = top->rgb;
 		}
 		ox++;
@@ -110,14 +110,11 @@ static void pix_capture() {
 	prev_vs = vs; prev_de = de;
 }
 
-// one CPU cycle = two pixel clocks
+// one CPU cycle (also the pixel clock)
 static void cpu_cycle() {
-	top->clk = 1; top->clk_pix = 1; top->eval(); sram_eval(); top->eval();
+	top->clk = 1; top->eval(); sram_eval(); top->eval();
 	cyc++; ref_tick(); pix_capture();
-	top->clk_pix = 0; top->eval();
-	top->clk_pix = 1; top->eval(); sram_eval(); top->eval();
-	pix_capture();
-	top->clk = 0; top->clk_pix = 0; top->eval(); sram_eval(); top->eval();
+	top->clk = 0; top->eval(); sram_eval(); top->eval();
 }
 
 int main(int argc, char **argv) {
