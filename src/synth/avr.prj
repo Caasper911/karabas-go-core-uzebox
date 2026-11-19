@@ -1,0 +1,3 @@
+verilog work "../rtl/avr/avr_core.v"
+verilog work "../rtl/avr/avr_io_m644.v"
+verilog work "../rtl/avr/atmega644.v"

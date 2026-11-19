@@ -10,8 +10,10 @@ A Uzebox core for the Karabas Go, Mini and Mini G boards (Xilinx Spartan-6 XC6SL
 
 - `modules/`: submodule `karabas-go-modules` (kg_* board modules, MCU link v2, OSD, HDMI, audio).
 - `upstream/uzebox/`: submodule of https://github.com/Uzebox/uzebox (GPL-3): kernel, demos (test corpus), `tools/uzem` (the reference emulator, oracle for the CPU / video / audio timing), `tools/packrom` (.uze format). Read only.
-- `src/rtl/`: our RTL (AVR core, peripherals, tops). `src/sim/`: testbenches (Verilator / ISim). `src/tools/`: scripts (.uze/.hex conversion, trace compare, top generation).
-- `docs/`: PLAN.md, images in `docs/img/`.
+- `src/rtl/avr/`: `avr_core.v` (cycle-exact AVR CPU), `avr_io_m644.v` (ports, timer 1, watchdog, EEPROM, OCR2A sample, other registers read back), `atmega644.v` (core + IO + 4 KB SRAM BRAM; program memory outside, `pm_addr` registered, `pm_rdata` sampled at the end of the cycle).
+- `src/sim/`: `build_uze.sh` builds uzem, the tools and the test games in a copy (`src/sim/build/uze`, needs msys2 ucrt64 avr-gcc + SDL2); `lockstep/` runs the RTL (Verilator) and Uzem's `avr8.cpp` in one program and compares the whole state after every instruction (`run_lockstep.sh <game.hex|.uze> -n frames -p png_prefix`, `run_suite.sh [frames]` for the game set, logs and last frames in `src/sim/build/suite`). The bench corrects the oracle where Uzem differs from the ATmega644 (EEPROM halt cycles); PLAN.md Ф0 lists the Uzem behaviours the RTL copies and the ones it does not. A change to the CPU / IO must keep `run_suite.sh` all OK.
+- `src/synth/synth_core.sh`: XST + map + par of `atmega644` alone (LUTs, timing at 57.27 MHz).
+- `src/tools/`: scripts. `docs/`: PLAN.md, images in `docs/img/`.
 
 ## Rules of the core
 
