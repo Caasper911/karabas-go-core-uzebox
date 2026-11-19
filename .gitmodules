@@ -1,0 +1,6 @@
+[submodule "upstream/uzebox"]
+	path = upstream/uzebox
+	url = https://github.com/Uzebox/uzebox.git
+[submodule "modules"]
+	path = modules
+	url = https://github.com/andykarpov/karabas-go-modules.git
