@@ -138,6 +138,45 @@ static void vid_capture() {
 	prev_vs = vs; prev_de = de;
 }
 
+// ------------------------------------------------------------------ the file mounter of the MCU (SD image)
+// As kg_l2_img on the sdc side: a request (hd_rd / hd_wr) is taken (hd_busy), served after a delay like the MCU
+// (IMG_DELAY clocks), a read sector comes as 512 hd_byte_in_strobe, a written one is read through hd_byte_addr /
+// hd_byte_out_data, then hd_done.
+static std::vector<uint8_t> img;
+static int img_state = 0, img_i = 0, img_wait = 0, img_mount = 0;
+static uint32_t img_lba = 0;
+static int img_reads = 0, img_writes = 0;
+static const int IMG_DELAY = 6000;
+static void img_tick() {
+	top->hd_done = 0; top->hd_byte_in_strobe = 0; top->img_mounted = 0;
+	if (img.empty()) return;
+	if (img_mount == 0 && cyc > 50) { top->img_mounted = 1; top->img_size = img.size(); img_mount = 1; return; }
+	switch (img_state) {
+	case 0:
+		if (top->hd_rd || top->hd_wr) {
+			img_state = top->hd_rd ? 1 : 3; img_lba = top->hd_lba; img_wait = IMG_DELAY; img_i = 0; top->hd_busy = 1;
+		}
+		break;
+	case 1:                                   // read: wait, then the bytes
+		if (img_wait) { img_wait--; break; }
+		if ((cyc & 3) == 0) {
+			size_t a = (size_t)img_lba * 512 + img_i;
+			top->hd_byte_addr = img_i; top->hd_byte_in_data = a < img.size() ? img[a] : 0; top->hd_byte_in_strobe = 1;
+			if (++img_i == 512) img_state = 2;
+		}
+		break;
+	case 2: top->hd_done = 1; top->hd_busy = 0; img_state = 0; img_reads++; break;
+	case 3:                                   // write: wait, then read the bytes out (latency 3)
+		if (img_wait) { img_wait--; break; }
+		if (img_i < 512 + 4) {
+			if (img_i >= 4) { size_t a = (size_t)img_lba * 512 + img_i - 4; if (a < img.size()) img[a] = top->hd_byte_out_data; }
+			top->hd_byte_addr = img_i < 512 ? img_i : 511;
+			img_i++;
+		} else img_state = 2, img_writes++, img_reads--;
+		break;
+	}
+}
+
 // ------------------------------------------------------------------ clocks (ps)
 static const uint64_t HALF_CPU = 17391, HALF_SDR = 6957, HALF_VID = 18519;
 static uint64_t t_cpu = HALF_CPU, t_sdr = HALF_SDR, t_vid = HALF_VID;
@@ -155,7 +194,7 @@ static void cpu_cycle() {
 		top->eval(); sram_eval(); top->eval();
 		if (vid_rise) vid_capture();
 		if (cpu_rise) {
-			cyc++; ref_tick();
+			cyc++; ref_tick(); img_tick();
 			if (top->audio != snd_last) { snd_changes++; snd_last = top->audio; }
 			return;
 		}
@@ -172,6 +211,12 @@ int main(int argc, char **argv) {
 		else if (!strcmp(argv[i], "-p") && i + 1 < argc) png_prefix = argv[++i];
 		else if (!strcmp(argv[i], "-e") && i + 1 < argc) png_every = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-k") && i + 1 < argc) sscanf(argv[++i], "%d:%d:%x", &key_at, &key_n, &key);
+		else if (!strcmp(argv[i], "-i") && i + 1 < argc) {
+			FILE *fi = fopen(argv[++i], "rb");
+			if (!fi) { fprintf(stderr, "cannot open %s\n", argv[i]); return 2; }
+			int ch; while ((ch = fgetc(fi)) != EOF) img.push_back(ch);
+			fclose(fi);
+		}
 	}
 	if (!png_prefix.empty() && !png_every) png_every = 1;
 	FILE *f = fopen(argv[1], "rb");
@@ -183,6 +228,7 @@ int main(int argc, char **argv) {
 
 	top = new Vuzebox;
 	top->areset = 1; top->areset_sdr = 1; top->reset = 0; top->joy_l = 0; top->joy_r = 0; top->kbd = 0;
+	top->sd_image = img.empty() ? 0 : 1; top->sd_miso = 1;   // the image if one is given, else no card (MISO high)
 	top->clk = 0; top->clk_sdr = 0; top->clk_vid = 0;
 	for (int i = 0; i < 8; i++) cpu_cycle();
 	top->areset = 0; top->areset_sdr = 0;
@@ -215,6 +261,8 @@ int main(int argc, char **argv) {
 	printf("%c", 10);
 	printf("game draws: cycles %d..%d after the line start (window 168..1607), rows %d..%d (window 0..223)%c", ext_x0, ext_x1, ext_y0, ext_y1, 10);
 	{ auto *R = top->rootp; printf("io: SPCR %02x SPSR %02x SPDR %02x DDRA %02x PORTA %02x DDRD %02x PORTD %02x UCSR0B %02x%c", R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2C], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2D], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2E], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x01], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x02], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0A], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0B], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0xA1], 10); }
+	printf("SD image: %d sectors read, %d written%c", img_reads, img_writes, 10);
+	printf("SPI RAM: a byte late: %d%c", (int)top->rootp->uzebox__DOT__spiram__DOT__late_r, 10);
 	printf("game frames %d, output frames %d, with a picture %d\n", ref_frames, out_frames, shown);
 	printf("%s: %d frames checked, %d differ\n", bad || !checked ? "FAIL" : "OK", checked, bad);
 	return bad || !checked || mism;

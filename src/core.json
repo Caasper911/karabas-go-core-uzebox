@@ -1,7 +1,7 @@
 {
     "id": "uzebox",
     "name": "Uzebox",
-    "build": "26112007",
+    "build": "26112009",
     "visible": true,
     "type": "osd",
     "order": 41,
@@ -11,7 +11,7 @@
     "boards": {
         "minig": {
             "link": 2,
-            "build": "26112007",
+            "build": "26112009",
             "bitstream": "karabas_minig.bin"
         }
     },
@@ -28,6 +28,28 @@
             "type": "T",
             "name": "Reset",
             "hotkey": "F12"
+        },
+        {
+            "type": "S",
+            "key": "sd",
+            "name": "SD card",
+            "options": [
+                "Real",
+                "Image"
+            ],
+            "default": 1
+        },
+        {
+            "type": "F",
+            "name": "SD image",
+            "slot": 1,
+            "extensions": ".img,.bin",
+            "dir": "/uzebox",
+            "hotkey": "Menu+F2",
+            "show_if": {
+                "item": "sd",
+                "value": "Image"
+            }
         }
     ]
 }

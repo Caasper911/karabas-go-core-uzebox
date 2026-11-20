@@ -7,7 +7,7 @@
 // sync; the first half line at least 200 lines after the last frame start makes the current line number
 // 0 (as Uzem). Picture pixel x of an input line = the cycle H_FIRST + 2x after its start (the window of
 // Uzem; variant V3: one pixel per two CPU cycles), x = 0..719, written into bank lc of a 4-line ring.
-// When a line of picture row y = vin - V_FIRST (0..223) ends, line_tg toggles with line_bank / line_row
+// When a line of picture row y = vin - V_FIRST (0..223) of a frame whose start was seen ends, line_tg toggles with line_bank / line_row
 // (held until the next line): the frame buffer copies the bank, read through rd_* in its own clock.
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 
@@ -63,7 +63,8 @@ always @(posedge clk) begin
 			vin <= (vin == 9'd261) ? 9'd0 : vin + 9'd1;
 			lc <= lc + 2'd1;
 			if (since != 9'h1FF) since <= since + 9'd1;
-			if (row < 9'd224) begin line_tg <= ~line_tg; line_bank <= lc; line_row <= row[7:0]; end
+			// only lines of a frame whose start was seen (before the lock the line numbers are not the game's)
+			if (row < 9'd224 && since < 9'd300) begin line_tg <= ~line_tg; line_bank <= lc; line_row <= row[7:0]; end
 		end
 		if (frame_start) begin since <= 9'd0; vin <= 9'd0; end
 		if (half) in_vs <= 1'b1;

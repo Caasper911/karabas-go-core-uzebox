@@ -35,6 +35,25 @@ module uzebox #(
 	output     [1:0]  sram_we_n,
 	output     [1:0]  sram_oe_n,
 
+	// the SD card: the card of the board (sd_image 0) or an image through the file mounter of the MCU
+	input             sd_image,
+	output            sd_cs_n,
+	output            sd_sck,
+	output            sd_mosi,
+	input             sd_miso,
+	input             img_mounted,      // the img_sdc side of kg_mcu2 (its slot of the image), clk domain
+	input      [31:0] img_size,
+	output            hd_rd,
+	output            hd_wr,
+	output     [31:0] hd_lba,
+	input             hd_busy,
+	input             hd_done,
+	input             hd_error,
+	input             hd_byte_in_strobe,
+	input      [8:0]  hd_byte_addr,
+	input      [7:0]  hd_byte_in_data,
+	output     [7:0]  hd_byte_out_data,
+
 	output     [12:0] sdr_a,
 	output     [1:0]  sdr_ba,
 	input      [15:0] sdr_dq_i,
@@ -55,6 +74,13 @@ module uzebox #(
 	output     [15:0] dbg_pc
 );
 
+// SPI RAM <-> SDRAM (uze_spiram <-> uze_fb)
+wire        sr_req_tg, sr_we, sr_ack_tg;
+wire [14:0] sr_word;
+wire [1:0]  sr_lane;
+wire [7:0]  sr_byte;
+wire [31:0] sr_rdata;
+
 // ---------------------------------------------------------------- reset and load
 reg loaded = 1'b0, cpu_rst = 1'b1;
 wire loading = ld_active | ~loaded;
@@ -69,10 +95,14 @@ assign running = ~cpu_rst;
 // ---------------------------------------------------------------- the ATmega644
 wire [14:0] pm_addr, pm_addr_nx;
 wire [15:0] pm_rdata;
-wire [7:0]  porta, ddra, ddrb, portd, ddrd, ocr2a;
+wire [7:0]  porta, ddra, ddrb, portd, ddrd, ocr2a;   // (PORTA / PORTD are used by the SPI devices below)
 wire [7:0]  pixel /* verilator public_flat */, portb /* verilator public_flat */;
 wire [1:0]  pad_data;
 wire        sample;
+wire        spi_sck, spi_mosi, spi_start, spi_done;
+wire [7:0]  spi_tx;
+wire        spi_ext;
+wire [7:0]  spi_rx_ext;
 
 atmega644 mcu (
 	.clk(clk), .rst(cpu_rst),
@@ -80,6 +110,8 @@ atmega644 mcu (
 	.pina({porta[7:2], pad_data}), .pinb(portb), .pinc(8'd0), .pind(portd),
 	.porta(porta), .ddra(ddra), .portb(portb), .ddrb(ddrb), .pixel(pixel), .portd(portd), .ddrd(ddrd),
 	.ocr2a(ocr2a), .sample(sample),
+	.spi_on(1'b1), .spi_sck(spi_sck), .spi_mosi(spi_mosi), .spi_miso(sd_miso), .spi_start(spi_start),
+	.spi_tx(spi_tx), .spi_done(spi_done), .spi_ext(spi_ext), .spi_rx_ext(spi_rx_ext),
 	.insn_start(), .dbg_pc(dbg_pc)
 );
 
@@ -112,6 +144,8 @@ wire [31:0] wb_dat_w, wb_dat_r;
 uze_fb fb (
 	.clk_sdr(clk_sdr), .rst_sdr(areset_sdr), .sdr_ready(sdr_ready),
 	.line_tg(line_tg), .line_bank(line_bank), .line_row(line_row), .rd_addr(ring_addr), .rd_data(ring_data),
+	.sr_req_tg(sr_req_tg), .sr_we(sr_we), .sr_word(sr_word), .sr_lane(sr_lane), .sr_byte(sr_byte),
+	.sr_ack_tg(sr_ack_tg), .sr_rdata(sr_rdata),
 	.wb_cyc(wb_cyc), .wb_stb(wb_stb), .wb_we(wb_we), .wb_sel(wb_sel), .wb_adr(wb_adr), .wb_cti(wb_cti),
 	.wb_dat_o(wb_dat_w), .wb_dat_i(wb_dat_r), .wb_ack(wb_ack),
 	.clk_vid(clk_vid), .rgb(rgb), .hs(hs), .vs(vs), .de(de)
@@ -135,6 +169,35 @@ uze_sdram sdram (
 	.sdr_dqm(sdr_dqm), .sdr_ras_n(sdr_ras_n), .sdr_cas_n(sdr_cas_n), .sdr_we_n(sdr_we_n)
 );
 `endif
+
+// ---------------------------------------------------------------- SPI devices
+// SPI RAM: CS = PA4, SD card: CS = PD6 (kernel spiram.s / sdBase.S); an emulated device answers in bytes
+wire cs_ram_n = porta[4] | ~ddra[4];
+wire cs_sd_n = portd[6] | ~ddrd[6];
+reg  [7:0] spi_txl = 8'd0;               // the byte of the transfer (spi_tx is valid at its start only)
+always @(posedge clk) if (spi_start) spi_txl <= spi_tx;
+wire [7:0] ram_rx, sd_out;
+assign spi_ext = !cs_ram_n || (!cs_sd_n && sd_image);
+assign spi_rx_ext = !cs_ram_n ? ram_rx : sd_out;
+assign sd_cs_n = sd_image | cs_sd_n;
+assign sd_sck = spi_sck;
+assign sd_mosi = spi_mosi;
+
+uze_spiram spiram (
+	.clk(clk), .rst(areset), .cs_n(cs_ram_n), .spi_start(spi_start), .spi_tx(spi_tx), .spi_done(spi_done),
+	.rx(ram_rx), .late(),
+	.m_req_tg(sr_req_tg), .m_we(sr_we), .m_word(sr_word), .m_lane(sr_lane), .m_byte(sr_byte),
+	.m_ack_tg(sr_ack_tg), .m_rdata(sr_rdata)
+);
+
+kg_sd_emu #(.CACHE(1)) sd_emu (
+	.clk(clk), .reset(cpu_rst),
+	.xfer_in(spi_done), .tx_in(spi_txl), .cs_n(cs_sd_n | ~sd_image), .out_byte(sd_out),
+	.img_mounted(img_mounted), .img_size(img_size),
+	.hd_rd(hd_rd), .hd_wr(hd_wr), .hd_lba(hd_lba), .hd_busy(hd_busy), .hd_done(hd_done), .hd_error(hd_error),
+	.hd_byte_in_strobe(hd_byte_in_strobe), .hd_byte_addr(hd_byte_addr), .hd_byte_in_data(hd_byte_in_data),
+	.hd_byte_out_data(hd_byte_out_data), .waiting()
+);
 
 // ---------------------------------------------------------------- sound
 reg sample_d = 1'b0;                 // OCR2A holds the new sample one clock after the write

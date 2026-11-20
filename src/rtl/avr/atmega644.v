@@ -26,6 +26,16 @@ module atmega644 (
 	output [7:0]  ocr2a,
 	output        sample,
 
+	input         spi_on,         // 0: SPI as Uzem without an SD card (the lockstep bench)
+	output        spi_sck,
+	output        spi_mosi,
+	input         spi_miso,
+	output        spi_start,
+	output [7:0]  spi_tx,
+	output        spi_done,
+	input         spi_ext,
+	input  [7:0]  spi_rx_ext,
+
 	output        insn_start,
 	output [15:0] dbg_pc
 );
@@ -53,7 +63,9 @@ avr_io_m644 io (
 	.irq(irq), .irq_vec(irq_vec), .irq_ack(irq_ack), .wdr(wdr), .insn_end(insn_end), .halt(halt),
 	.pina(pina), .pinb(pinb), .pinc(pinc), .pind(pind),
 	.porta(porta), .ddra(ddra), .portb(portb), .ddrb(ddrb), .pixel(pixel), .portd(portd), .ddrd(ddrd),
-	.ocr2a(ocr2a), .sample(sample)
+	.ocr2a(ocr2a), .sample(sample),
+	.spi_on(spi_on), .spi_sck(spi_sck), .spi_mosi(spi_mosi), .spi_miso(spi_miso), .spi_start(spi_start),
+	.spi_tx(spi_tx), .spi_done(spi_done), .spi_ext(spi_ext), .spi_rx_ext(spi_rx_ext)
 );
 
 // data SRAM 4 KB: one write port, one read port (read address of the next cycle)
