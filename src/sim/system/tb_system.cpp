@@ -223,6 +223,17 @@ static void ps2_type(uint64_t at, const char *s) {
 		at += K;
 	}
 }
+// USB mouse (kg_mcu2 MS_*): -M frame:frames:dx:dy:buttons sends a report every 10 ms during those output frames
+struct ms_ev { int at, n, dx, dy, b; };
+static std::vector<ms_ev> ms_evs;
+static int ms_frame = 0, ms_sent = 0;
+static void ms_tick() {
+	top->ms_wr = 0;
+	if (cyc % 287500) return;
+	for (auto &e : ms_evs) if (ms_frame >= e.at && ms_frame < e.at + e.n) {
+		top->ms_x = (uint8_t)e.dx; top->ms_y = (uint8_t)e.dy; top->ms_b = e.b; top->ms_wr = 1; ms_sent++;
+	}
+}
 static void ps2_tick() {
 	top->ps2_wr = 0;
 	if (!ps2_q.empty() && cyc >= ps2_q.front().first) {
@@ -294,7 +305,7 @@ static void cpu_cycle() {
 		top->eval(); sram_eval(); top->eval();
 		if (vid_rise) vid_capture();
 		if (cpu_rise) {
-			cyc++; img_tick(); ps2_tick(); esp_tick();
+			cyc++; img_tick(); ps2_tick(); ms_tick(); esp_tick();
 			// the frozen chip (SD image wait): no time passes for the game, nor for the reference frames
 			bool fz = top->rootp->uzebox__DOT__sd_freeze;
 			if (fz) { frozen++; if (!frozen_last) freezes++; } else ref_tick();
@@ -325,6 +336,7 @@ int main(int argc, char **argv) {
 	std::vector<int> k_at, k_n, k_key;      // -k frame:frames:usb_key (output frames), may repeat
 	std::vector<std::pair<int, std::string>> type_at;   // -K frame:text (PS/2 set 2 bytes from that output frame)
 	int kb_mode = 0;                         // -m: OSD Keyboard 0 Auto, 1 Pad, 2 PS/2
+	int ms_port = 2;                         // -P: the SNES mouse port 0 off, 1, 2
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "-n") && i + 1 < argc) max_frames = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-p") && i + 1 < argc) png_prefix = argv[++i];
@@ -345,6 +357,10 @@ int main(int argc, char **argv) {
 			fclose(fi);
 		} else if (!strcmp(argv[i], "-L")) boot_loader = 1;      // Boot = Loader
 		else if (!strcmp(argv[i], "-m") && i + 1 < argc) kb_mode = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "-P") && i + 1 < argc) ms_port = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "-M") && i + 1 < argc) {
+			ms_ev e = {0, 0, 0, 0, 0}; sscanf(argv[++i], "%d:%d:%d:%d:%d", &e.at, &e.n, &e.dx, &e.dy, &e.b); ms_evs.push_back(e);
+		}
 		else if (!strcmp(argv[i], "-K") && i + 1 < argc) {
 			const char *a = argv[++i], *c = strchr(a, ':');
 			if (c) type_at.push_back({atoi(a), std::string(c + 1)});
@@ -368,6 +384,7 @@ int main(int argc, char **argv) {
 	top = new Vuzebox;
 	top->areset = 1; top->areset_sdr = 1; top->reset = 0; top->joy_l = 0; top->joy_r = 0; top->kbd = 0;
 	top->kb_mode = kb_mode; top->ps2_wr = 0; top->uart_rxd = 1;
+	top->ms_port = ms_port; top->ms_wr = 0; top->ms_x = 0; top->ms_y = 0; top->ms_b = 0;
 	top->sd_image = files[1].empty() ? 0 : 1; top->boot = boot_loader; top->img_flush = 0; top->sd_miso = 1;   // the image if one is given, else no card (MISO high)
 	top->clk = 0; top->clk_sdr = 0; top->clk_vid = 0;
 	for (int i = 0; i < 8; i++) cpu_cycle();
@@ -424,6 +441,7 @@ int main(int argc, char **argv) {
 		for (size_t q = 0; q < k_at.size(); q++)
 			if (out_frames >= k_at[q] && out_frames < k_at[q] + k_n[q]) kb = (uint64_t)k_key[q] << 8;
 		top->kbd = kb;
+		ms_frame = out_frames;
 		for (auto &t : type_at) if (t.first >= 0 && out_frames >= t.first) { ps2_type(cyc, t.second.c_str()); t.first = -1; }
 		cpu_cycle();
 		if (getenv("PADDBG")) {               // the pad read of the game: data bit at each rising clock after the latch
@@ -454,6 +472,7 @@ int main(int argc, char **argv) {
 	printf("SD image bytes taken by the CPU: %llu, wrong %llu%c", (unsigned long long)sd_bytes, (unsigned long long)sd_bad, 10);
 	printf("SD image waits: %llu, %.1f ms frozen%c", (unsigned long long)freezes, frozen / 28750.0, 10);
 	if (ps2_sent) printf("PS/2 bytes sent: %d%c", ps2_sent, 10);
+	if (ms_sent) printf("mouse reports sent: %d%c", ms_sent, 10);
 	if (!esp_from_core.empty() || !esp_to_core.empty())
 		printf("UART from the core: \"%s\"%cUART to the core: \"%s\"%c", esc(esp_from_core).c_str(), 10, esc(esp_to_core).c_str(), 10);
 	if (sav_out) { FILE *fo = fopen(sav_out, "wb"); if (fo) { fwrite(files[2].data(), 1, files[2].size(), fo); fclose(fo); } }

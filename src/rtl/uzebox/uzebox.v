@@ -34,6 +34,11 @@ module uzebox #(
 	input      [1:0]  kb_mode,        // OSD Keyboard: 0 Auto, 1 Pad, 2 PS/2 (uze_pads)
 	input      [7:0]  ps2_code,       // PS/2 set 2 bytes of the USB keyboard
 	input             ps2_wr,
+	input      [1:0]  ms_port,        // OSD Mouse: 0 Off, 1 port 1, 2 port 2 (SNES mouse, uze_pads)
+	input      [7:0]  ms_x,           // the USB mouse of the MCU
+	input      [7:0]  ms_y,
+	input      [7:0]  ms_b,
+	input             ms_wr,
 	input             uart_rxd,       // USART0: the ESP8266 (Uzenet)
 	output            uart_txd,
 	output            uart_cts,
@@ -186,7 +191,8 @@ uze_pm_sram pm (
 );
 
 uze_pads pads (.clk(clk), .porta(porta), .joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .rst(cpu_rst), .kb_mode(kb_mode),
-	.ps2_code(ps2_code), .ps2_wr(ps2_wr), .kb_on(), .data(pad_data));
+	.ps2_code(ps2_code), .ps2_wr(ps2_wr), .kb_on(),
+	.ms_port(ms_port), .ms_x(ms_x), .ms_y(ms_y), .ms_b(ms_b), .ms_wr(ms_wr), .data(pad_data));
 
 wire        line_tg;
 wire [1:0]  line_bank;

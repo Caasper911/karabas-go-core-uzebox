@@ -217,7 +217,9 @@ wire [1:0] ld_kind;
 wire [7:0] ld_slot, ld_data;
 wire [31:0] ld_addr;
 wire ld_start, ld_active, ld_end, ld_wr;
-wire [8*6-1:0] sw;
+wire [8*7-1:0] sw;
+wire [7:0] ms_x, ms_y, ms_b;
+wire ms_wr;
 wire [7:0] ps2_code;
 wire ps2_kind, ps2_wr;
 wire [7:0] sdc_img_mounted;
@@ -243,8 +245,8 @@ wire [3:0] osd_py;
 wire [5:0] osd_pw;
 
 kg_mcu2 #(
-	.SW_N(6),
-	.SW_INIT(48'h00_00_00_01_00_00), // 2 SD card: Image, 4 Boot: Game, 5 Keyboard: Auto
+	.SW_N(7),
+	.SW_INIT(56'h00_00_00_00_01_00_00), // 2 SD card: Image, 4 Boot: Game, 5 Keyboard: Auto, 6 Mouse: Port 2
 	.CS_FILTER(3),
 	.CAPS(16'h0002),             // bit 1: flush the backup RAM (EEPROM .sav) before another game / core
 	.ENABLE_OSD(1),
@@ -270,7 +272,7 @@ kg_mcu2 #(
 
 	.KBD(kbd), .KBD_WR(),
 	.PS2_CODE(ps2_code), .PS2_KIND(ps2_kind), .PS2_WR(ps2_wr),
-	.MS_X(), .MS_Y(), .MS_Z(), .MS_B(), .MS_WR(),
+	.MS_X(ms_x), .MS_Y(ms_y), .MS_Z(), .MS_B(ms_b), .MS_WR(ms_wr),
 	.JOY_L(joy_l), .JOY_R(joy_r), .JOY_WR(),
 	.PS2_CMD(16'h0000), .PS2_CMD_WR(1'b0),
 
@@ -305,6 +307,7 @@ wire sw_reset = sw[8];                 // OSD Reset (item index 1)
 wire sw_sd_image = sw[16];             // OSD SD card: 0 Real, 1 Image (item index 2)
 wire sw_boot = sw[32];                 // OSD Bootloader: 0 Off (the game of item 0), 1 On (Bootloader5) (item 4)
 wire [1:0] sw_kb = sw[41:40];          // OSD Keyboard: 0 Auto, 1 Pad, 2 PS/2 (item 5)
+wire [1:0] sw_ms = sw[49:48];          // OSD Mouse: 0 Port 2, 1 Port 1, 2 Off (item 6)
 wire ld_game = ld_kind == 2'd2 && ld_slot == 8'd0;
 wire ld_rom = ld_kind == 2'd0;          // the ROM of the .kg: Bootloader5 at 0xF000
 wire ld_any = ld_game | ld_rom;
@@ -331,7 +334,7 @@ uzebox console (
 	.boot(sw_boot), .ld_raw(ld_rom),
 	.ld_start(ld_start & ld_any), .ld_active(ld_active & ld_any), .ld_end(ld_end & ld_any),
 	.ld_wr(ld_wr & ld_any), .ld_addr(ld_addr), .ld_data(ld_data),
-	.joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .kb_mode(sw_kb), .uart_rxd(UART_RX), .uart_txd(uart_txd), .uart_cts(uart_cts), .ps2_code(ps2_code), .ps2_wr(ps2_wr && !ps2_kind),
+	.joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .kb_mode(sw_kb), .ms_port(sw_ms == 2'd0 ? 2'd2 : sw_ms == 2'd1 ? 2'd1 : 2'd0), .ms_x(ms_x), .ms_y(ms_y), .ms_b(ms_b), .ms_wr(ms_wr), .uart_rxd(UART_RX), .uart_txd(uart_txd), .uart_cts(uart_cts), .ps2_code(ps2_code), .ps2_wr(ps2_wr && !ps2_kind),
 	.sd_image(sw_sd_image), .sd_cs_n(SD_CS_N), .sd_sck(SD_CLK), .sd_mosi(SD_DI), .sd_miso(SD_DO),
 	.sdc_img_mounted(sdc_img_mounted), .sdc_img_size(sdc_img_size), .sdc_rd(sdc_rd), .sdc_wr(sdc_wr),
 	.sdc_sector(sdc_sector), .sdc_busy(sdc_busy), .sdc_done(sdc_done), .sdc_error(sdc_error), .sdc_slot(sdc_slot),
