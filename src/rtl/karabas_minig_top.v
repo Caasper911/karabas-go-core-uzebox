@@ -363,6 +363,14 @@ end
 
 reg dvi_only_p = 1'b0;
 always @(posedge clk_vid) dvi_only_p <= dvi_only;
+// HDMI starts 0.62 s (2^24 clocks of 27 MHz) after the PLLs lock: no TMDS at all before (the
+// serializers in reset send no clock). A monitor that saw the first moments of the core (a game
+// loaded at once) kept a wrong mode until the cable was plugged again (user 2026-11-20).
+reg [24:0] hdmi_wait = 25'd0;
+always @(posedge clk_vid)
+	if (areset_vid) hdmi_wait <= 25'd0;
+	else if (!hdmi_wait[24]) hdmi_wait <= hdmi_wait + 25'd1;
+wire hdmi_reset = ~hdmi_wait[24];
 reg hdmi_hs = 1'b1, hdmi_vs = 1'b1, hdmi_de = 1'b0;
 reg [23:0] hdmi_rgb = 24'd0;
 always @(posedge clk_vid) begin
@@ -372,7 +380,7 @@ always @(posedge clk_vid) begin
 	hdmi_rgb <= osd_rgb;
 end
 hdmi_tx #(.SAMPLE_FREQ(48000)) hdmi (
-	.clk(clk_vid), .sclk(clk_hdmi), .sclk_n(clk_hdmi_n), .reset(areset_vid),
+	.clk(clk_vid), .sclk(clk_hdmi), .sclk_n(clk_hdmi_n), .reset(hdmi_reset),
 	.rgb(hdmi_rgb), .vsync(hdmi_vs), .hsync(hdmi_hs), .de(hdmi_de),
 	.audio_en(~dvi_only_p), .audio_l({ snd_v, 8'h00 }), .audio_r({ snd_v, 8'h00 }), .audio_clk(aud_stb),
 	.tx_clk_n(TMDS_N[3]), .tx_clk_p(TMDS_P[3]), .tx_d_n(TMDS_N[2:0]), .tx_d_p(TMDS_P[2:0])
