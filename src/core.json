@@ -1,11 +1,12 @@
 {
     "id": "uzebox",
     "name": "Uzebox",
-    "build": "26112014",
+    "build": "26112015",
     "visible": true,
     "type": "osd",
     "order": 41,
     "eeprom_bank": 255,
+    "spi_freq": 32,
     "rtc_mode": 0,
     "roms": [
         {
@@ -16,7 +17,7 @@
     "boards": {
         "minig": {
             "link": 2,
-            "build": "26112014",
+            "build": "26112015",
             "bitstream": "karabas_minig.bin"
         }
     },
