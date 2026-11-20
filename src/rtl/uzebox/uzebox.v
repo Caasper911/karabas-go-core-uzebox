@@ -88,7 +88,7 @@ module uzebox #(
 
 // SD image (kg_sd_emu) <-> the file mounter
 wire hd_rd, hd_wr;
-wire [31:0] hd_lba;
+wire [31:0] hd_lba, hd_rq_lba;
 wire [7:0] hd_byte_out;
 
 // SPI RAM <-> SDRAM (uze_spiram <-> uze_fb)
@@ -233,7 +233,7 @@ kg_sd_emu #(.CACHE(1)) sd_emu (
 	.clk(clk), .reset(cpu_rst),
 	.xfer_in(spi_done), .tx_in(spi_txl), .cs_n(cs_sd_n | ~sd_image), .out_byte(sd_out),
 	.img_mounted(sdc_img_mounted[1]), .img_size(|sdc_img_size[63:32] ? 32'hFFFFFE00 : sdc_img_size[31:0]),
-	.hd_rd(hd_rd), .hd_wr(hd_wr), .hd_lba(hd_lba), .hd_busy(sdc_busy && sdc_slot == 3'd1),
+	.hd_rd(hd_rd), .hd_wr(hd_wr), .hd_lba(hd_lba), .rq_lba(hd_rq_lba), .hd_busy(sdc_busy && sdc_slot == 3'd1),
 	.hd_done(sdc_done && sdc_slot == 3'd1), .hd_error(sdc_error),
 	.hd_byte_in_strobe(sdc_byte_in_strobe && sdc_slot == 3'd1), .hd_byte_addr(sdc_byte_addr),
 	.hd_byte_in_data(sdc_byte_in_data), .hd_byte_out_data(hd_byte_out), .waiting()
@@ -265,7 +265,7 @@ kg_bk_ram #(.SLOT(3'd2), .LINK(2)) bk (
 // served, or of the lowest one asking
 assign sdc_rd = {bk_rd[7:3], bk_rd[2], hd_rd, 1'b0};
 assign sdc_wr = {bk_wr[7:3], bk_wr[2], hd_wr, 1'b0};
-assign sdc_sector = (sdc_busy ? sdc_slot == 3'd1 : (hd_rd | hd_wr)) ? hd_lba : bk_sector;
+assign sdc_sector = (sdc_busy ? sdc_slot == 3'd1 : (hd_rd | hd_wr)) ? hd_rq_lba : bk_sector;
 assign sdc_byte_out_data = sdc_slot == 3'd1 ? hd_byte_out : bk_out;
 
 // ---------------------------------------------------------------- sound

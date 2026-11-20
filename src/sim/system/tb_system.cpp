@@ -151,7 +151,7 @@ static bool mounted[8];
 static int img_state = 0, img_i = 0, img_wait = 0, img_slot = 0;
 static uint32_t img_lba = 0;
 static int img_reads = 0, img_writes = 0, bk_mounts = 0;
-static const int IMG_DELAY = 6000;
+static int IMG_DELAY = 6000;                // env IMGDELAY: the MCU takes 5..40 ms (150000..1150000 clocks)
 static void img_tick() {
 	top->sdc_done = 0; top->sdc_byte_in_strobe = 0; top->sdc_img_mounted = 0; top->sdc_error = 0;
 	if (!files[1].empty() && !mounted[1] && cyc > 50) {
@@ -219,6 +219,7 @@ static void cpu_cycle() {
 
 int main(int argc, char **argv) {
 	Verilated::commandArgs(argc, argv);
+	if (getenv("IMGDELAY")) IMG_DELAY = atoi(getenv("IMGDELAY"));
 	crc_init();
 	if (argc < 2) { fprintf(stderr, "usage: %s game.uze [-n frames] [-p png] [-e n] [-k f:n:key]\n", argv[0]); return 2; }
 	int max_frames = 10;
