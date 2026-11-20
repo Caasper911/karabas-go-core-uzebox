@@ -1,11 +1,13 @@
-// tb_system.cpp - the whole console (uzebox.v) with a model of the async board SRAM: loads a .uze through
-// the LD_* loader ports (as kg_mcu2 does: a byte every 8 CPU clocks), runs it and checks the video
-// output (720 x 480 window, the doubled picture: pixel x = cycle 168 + 2x) against a reference frame taken from PORTC / PB0 the
-// way Uzem does (picture x = cycle 168 + x after the rise of PB0, rows from the 38th line after the
-// first half line). Saves output frames as PNG. Also finds V_FIRST (the input line of picture row 0).
+// tb_system.cpp - the whole console (uzebox.v, built with UZE_SIM_SDRAM: a wishbone RAM in place of the
+// SDRAM controller) with a model of the async board SRAM, in its three clocks (CPU 28.75 MHz, SDRAM
+// 71.875 MHz, video 27 MHz). Loads a .uze through the LD_* loader ports (as kg_mcu2: a byte every 8 CPU
+// clocks), runs it and checks the 720 x 480p output: the picture rows (active lines 16 + 2y, 17 + 2y,
+// pixel x = cycle 168 + 2x after the rise of PB0) must equal one of the last reference frames, taken from
+// PORTC / PB0 the way Uzem does (rows from the 38th line after the first half line). Frames may be
+// dropped or repeated (game 60.29 Hz, output 59.94 Hz), a torn frame matches none. Saves PNG frames.
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 //
-// Usage: tb_system <game.uze> [-n frames] [-p png_prefix] [-e every] [-k start_frame:frames:usb_key]
+// Usage: tb_system <game.uze> [-n output_frames] [-p png_prefix] [-e every] [-k start_frame:frames:usb_key]
 
 #include "Vuzebox.h"
 #include "Vuzebox___024root.h"
@@ -16,6 +18,7 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <map>
 #include "../lockstep/png.h"
 
 double sc_time_stamp() { return 0; }
@@ -33,75 +36,85 @@ static void sram_eval() {
 	top->sram_dq_i = (top->sram_oe_n == 0) ? sram[a] : 0xFFFF;
 }
 
-// reference: Uzem's window on PORTC / PB0
+// ------------------------------------------------------------------ reference: Uzem's window
 static uint8_t linebuf[2048];
-static std::vector<uint8_t> ref(1440 * 224), ref_prev(1440 * 224);
-static uint64_t fper_min = ~0ULL, fper_max = 0;
-static int scanline = -999, ref_frames = 0, vfirst_seen = -1;
+static std::vector<uint8_t> ref(1440 * 224);
+static std::vector<std::vector<uint8_t>> refs;          // the last complete reference frames
+static int scanline = -999, ref_frames = 0;
 static uint64_t prev_rise = 0, line_start = 0;
 static int prev_pb0 = 0;
+static std::map<uint64_t, uint64_t> rise_hist;
 static void ref_tick() {
 	auto *R = top->rootp;
 	linebuf[cyc & 0x7FF] = R->uzebox__DOT__pixel;
 	int pb0 = R->uzebox__DOT__portb & 1;
 	if (pb0 && !prev_pb0) {
 		uint64_t el = cyc - prev_rise;
-		if (scanline == -999 && el >= 900 && el <= 920) {
-			scanline = -38;
-			static uint64_t last_fs = 0;
-			if (last_fs) { uint64_t d = cyc - last_fs; if (d < fper_min) fper_min = d; if (d > fper_max) fper_max = d; }
-			last_fs = cyc;
-		}
+		rise_hist[el]++;
+		if (scanline == -999 && el >= 895 && el <= 925) scanline = -38;
 		else if (scanline != -999) {
 			if (scanline >= 0 && scanline < 224)
 				for (int i = 0; i < 1440; i++) ref[scanline * 1440 + i] = linebuf[(line_start + 168 + i) & 0x7FF];
 			scanline++;
 			line_start = cyc;
-			if (scanline == 0) vfirst_seen = R->uzebox__DOT__video__DOT__vin;
-			if (scanline == 224) { ref_prev = ref; ref_frames++; scanline = -999; }
+			if (scanline == 224) {
+				refs.push_back(ref);
+				if (refs.size() > 4) refs.erase(refs.begin());
+				ref_frames++;
+				scanline = -999;
+			}
 		}
 		prev_rise = cyc;
 	}
 	prev_pb0 = pb0;
 }
 
-// output capture (pixel clock)
+static void rgb332(uint8_t p, uint8_t *o) {
+	o[0] = ((p & 7) << 5) | ((p & 7) << 2) | ((p & 7) >> 1);
+	o[1] = (((p >> 3) & 7) << 5) | (((p >> 3) & 7) << 2) | (((p >> 3) & 7) >> 1);
+	o[2] = ((p >> 6) & 3) * 0x55;
+}
+
+// ------------------------------------------------------------------ output capture (video clock)
 static std::vector<uint8_t> out(720 * 480 * 3);
 static int ox = 0, oy = 0, out_frames = 0, prev_vs = 0, prev_de = 0;
 static std::string png_prefix;
 static int png_every = 0;
-static int checked = 0, bad = 0;
+static int checked = 0, bad = 0, shown = 0;
 
 static void check_frame() {
-	// picture rows: active lines 16 + 2y and 17 + 2y, y = 0..223, against the last reference frame
-	int worst = 0;
-	for (int y = 0; y < 224; y++)
-		for (int k = 0; k < 2; k++)
-			for (int x = 0; x < 720; x++) {
-				uint8_t p = ref_prev[y * 1440 + 2 * x];
-				uint8_t r = ((p & 7) << 5) | ((p & 7) << 2) | ((p & 7) >> 1);
-				uint8_t g = (((p >> 3) & 7) << 5) | (((p >> 3) & 7) << 2) | (((p >> 3) & 7) >> 1);
-				uint8_t b = ((p >> 6) & 3) * 0x55;
-				const uint8_t *o = &out[((16 + 2 * y + k) * 720 + x) * 3];
-				if (o[0] != r || o[1] != g || o[2] != b) worst++;
-			}
-	static int lock_frame = -1;
-	if (!top->rootp->uzebox__DOT__video__DOT__lock_r) { printf("frame %d: picture not locked yet\n", out_frames); return; }
-	if (lock_frame < 0) { lock_frame = out_frames; printf("frame %d: locked\n", out_frames); }
-	int lit = 0;
-	for (uint8_t p : ref_prev) if (p) lit++;
-	if (!lit) { printf("frame %d: blank (not counted)\n", out_frames); return; }
+	bool any = false;
+	for (int y = 16; y < 464 && !any; y++)
+		for (int x = 0; x < 720 && !any; x++) {
+			const uint8_t *o = &out[(y * 720 + x) * 3];
+			if (o[0] | o[1] | o[2]) any = true;
+		}
+	if (!any) { printf("frame %d: black\n", out_frames); return; }
+	shown++;
+	int best = -1, best_diff = 1 << 30;
+	for (size_t r = 0; r < refs.size(); r++) {
+		int diff = 0;
+		for (int y = 0; y < 224; y++)
+			for (int k = 0; k < 2; k++)
+				for (int x = 0; x < 720; x++) {
+					uint8_t c[3]; rgb332(refs[r][y * 1440 + 2 * x], c);
+					const uint8_t *o = &out[((16 + 2 * y + k) * 720 + x) * 3];
+					if (o[0] != c[0] || o[1] != c[1] || o[2] != c[2]) diff++;
+				}
+		if (diff < best_diff) { best_diff = diff; best = (int)r; }
+	}
 	checked++;
-	if (worst) bad++;
-	printf("frame %d: %d lit pixels, %d differ from the reference%s\n", out_frames, lit, worst, worst ? "" : " (OK)");
+	if (best_diff) bad++;
+	printf("frame %d: %s (reference -%d, %d pixels differ)\n", out_frames, best_diff ? "DIFFERS" : "OK",
+	       (int)refs.size() - 1 - best, best_diff);
 }
 
-static void pix_capture() {
+static void vid_capture() {
 	int vs = top->vs, de = top->de;
 	if (vs && !prev_vs) {
 		if (oy == 480) {
 			out_frames++;
-			if (ref_frames >= 2) check_frame();
+			if (refs.size() >= 2) check_frame();
 			if (!png_prefix.empty() && png_every && out_frames % png_every == 0) {
 				char n[512]; snprintf(n, sizeof n, "%s_%04d.png", png_prefix.c_str(), out_frames);
 				write_png(n, out.data(), 720, 480);
@@ -119,15 +132,28 @@ static void pix_capture() {
 	prev_vs = vs; prev_de = de;
 }
 
-// one CPU cycle (also the pixel clock)
-static uint64_t snd_changes = 0; static uint16_t snd_last = 0, snd_min = 0xFFFF, snd_max = 0;
+// ------------------------------------------------------------------ clocks (ps)
+static const uint64_t HALF_CPU = 17391, HALF_SDR = 6957, HALF_VID = 18519;
+static uint64_t t_cpu = HALF_CPU, t_sdr = HALF_SDR, t_vid = HALF_VID;
+static uint64_t snd_changes = 0; static uint16_t snd_last = 0;
+
+// advance to the next rising edge of the CPU clock, running the other clocks on the way
 static void cpu_cycle() {
-	top->clk = 1; top->eval(); sram_eval(); top->eval();
-	if (top->audio != snd_last) { snd_changes++; snd_last = top->audio; }
-	if ((int16_t)top->audio < (int16_t)snd_min) snd_min = top->audio;
-	if ((int16_t)top->audio > (int16_t)snd_max) snd_max = top->audio;
-	cyc++; ref_tick(); pix_capture();
-	top->clk = 0; top->eval(); sram_eval(); top->eval();
+	for (;;) {
+		uint64_t t = t_cpu < t_sdr ? t_cpu : t_sdr;
+		if (t_vid < t) t = t_vid;
+		bool cpu_rise = false, vid_rise = false;
+		if (t_cpu == t) { top->clk = !top->clk; cpu_rise = top->clk; t_cpu += HALF_CPU; }
+		if (t_sdr == t) { top->clk_sdr = !top->clk_sdr; t_sdr += HALF_SDR; }
+		if (t_vid == t) { top->clk_vid = !top->clk_vid; vid_rise = top->clk_vid; t_vid += HALF_VID; }
+		top->eval(); sram_eval(); top->eval();
+		if (vid_rise) vid_capture();
+		if (cpu_rise) {
+			cyc++; ref_tick();
+			if (top->audio != snd_last) { snd_changes++; snd_last = top->audio; }
+			return;
+		}
+	}
 }
 
 int main(int argc, char **argv) {
@@ -150,19 +176,18 @@ int main(int argc, char **argv) {
 	for (auto &w : sram) w = 0x5A5A;          // the SRAM holds garbage at power up
 
 	top = new Vuzebox;
-	top->areset = 1; top->reset = 0; top->joy_l = 0; top->joy_r = 0; top->kbd = 0;
-	for (int i = 0; i < 4; i++) cpu_cycle();
-	top->areset = 0;
+	top->areset = 1; top->areset_sdr = 1; top->reset = 0; top->joy_l = 0; top->joy_r = 0; top->kbd = 0;
+	top->clk = 0; top->clk_sdr = 0; top->clk_vid = 0;
+	for (int i = 0; i < 8; i++) cpu_cycle();
+	top->areset = 0; top->areset_sdr = 0;
 	for (int i = 0; i < 100; i++) cpu_cycle();
 
-	// the load, as kg_mcu2: LD_START, then a byte every 8 clocks with LD_WR, LD_END
 	top->ld_start = 1; top->ld_active = 1; cpu_cycle(); top->ld_start = 0;
 	for (size_t i = 0; i < uze.size(); i++) {
 		top->ld_addr = i; top->ld_data = uze[i]; top->ld_wr = 1; cpu_cycle(); top->ld_wr = 0;
 		for (int k = 0; k < 7; k++) cpu_cycle();
 	}
 	top->ld_end = 1; top->ld_active = 0; cpu_cycle(); top->ld_end = 0;
-	// the program in the SRAM must be the file
 	int mism = 0;
 	for (size_t i = 512; i < uze.size(); i++) {
 		size_t p = i - 512;
@@ -178,9 +203,11 @@ int main(int argc, char **argv) {
 		}
 		cpu_cycle();
 	}
-	printf("audio: %llu changes, min %d max %d\n", (unsigned long long)snd_changes, (int16_t)snd_min, (int16_t)snd_max);
-	printf("input frame: %llu..%llu cycles (524 x 910 = 476840)\n", (unsigned long long)fper_min, (unsigned long long)fper_max);
-	printf("V_FIRST measured: %d (input line of picture row 0)\n", vfirst_seen);
-	printf("%s: %d frames checked, %d with differences\n", bad || !checked ? "FAIL" : "OK", checked, bad);
+	printf("audio: %llu changes\n", (unsigned long long)snd_changes);
+	printf("PB0 rise intervals (cycles: count):");
+	for (auto &h : rise_hist) if (h.second > 20) printf(" %llu:%llu", (unsigned long long)h.first, (unsigned long long)h.second);
+	printf("%c", 10);
+	printf("game frames %d, output frames %d, with a picture %d\n", ref_frames, out_frames, shown);
+	printf("%s: %d frames checked, %d differ\n", bad || !checked ? "FAIL" : "OK", checked, bad);
 	return bad || !checked || mism;
 }

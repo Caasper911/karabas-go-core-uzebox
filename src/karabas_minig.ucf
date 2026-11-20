@@ -235,8 +235,24 @@ NET "FLASH_HOLD_N"     LOC="P12"    | IOSTANDARD = LVCMOS33; # CONF_IO3
 # ---------------------------------------------------------------- timing (karabas-go-core-uzebox)
 NET "CLK_50MHZ" TNM_NET = "CLK_50MHZ";
 TIMESPEC "TS_CLK_50MHZ" = PERIOD "CLK_50MHZ" 20 ns HIGH 50%;
-# clk_cpu 28.75 MHz (CPU and video), clk_hdmi 143.75 MHz: derived from the PLL
+# PLL 1: clk_cpu 28.75 MHz, clk_sdr 71.875 MHz (+ 225 degrees for SDR_CLK), 25 MHz -> PLL 2: clk_vid 27 MHz,
+# clk_hdmi 135 MHz; the periods are derived from the PLLs
 NET "pll_clk<0>" TNM_NET = "TG_CLK_CPU";
+NET "pll_clk<1>" TNM_NET = "TG_CLK_SDR";
+NET "vpll_clk<0>" TNM_NET = "TG_CLK_VID";
+# between the domains only synchronised toggles and values held for a whole line cross (uze_video ->
+# uze_fb, uze_fb -> video, the sound sample, the OSD link side)
+TIMESPEC "TS_CPU_TO_SDR" = FROM "TG_CLK_CPU" TO "TG_CLK_SDR" 13 ns DATAPATHONLY;
+TIMESPEC "TS_SDR_TO_CPU" = FROM "TG_CLK_SDR" TO "TG_CLK_CPU" 13 ns DATAPATHONLY;
+TIMESPEC "TS_SDR_TO_VID" = FROM "TG_CLK_SDR" TO "TG_CLK_VID" 13 ns DATAPATHONLY;
+TIMESPEC "TS_VID_TO_SDR" = FROM "TG_CLK_VID" TO "TG_CLK_SDR" 13 ns DATAPATHONLY;
+TIMESPEC "TS_CPU_TO_VID" = FROM "TG_CLK_CPU" TO "TG_CLK_VID" 25 ns DATAPATHONLY;
+TIMESPEC "TS_VID_TO_CPU" = FROM "TG_CLK_VID" TO "TG_CLK_CPU" 25 ns DATAPATHONLY;
+# the SDRAM (as core-agon / core-doom: uze_sdram = their controller, SDR_CLK 225 degrees after clk_sdr)
+TIMEGRP "TG_SDR_IN" = PADS("SDR_DQ<*>");
+TIMEGRP "TG_SDR_OUT" = "TG_SDR_IN" PADS("SDR_A<*>") PADS("SDR_BA<*>") PADS("SDR_DQM<*>") PADS("SDR_RAS_N") PADS("SDR_CAS_N") PADS("SDR_WE_N");
+TIMESPEC "TS_SDR_OUT" = FROM FFS TO "TG_SDR_OUT" 6 ns DATAPATHONLY;
+TIMESPEC "TS_SDR_IN" = FROM "TG_SDR_IN" TO FFS 4 ns DATAPATHONLY;
 # the MCU link: kg_mcu2 in clk_cpu
 NET "MCU_SCK" TNM_NET = "TG_CLK_MCU";
 TIMESPEC "TS_CLK_MCU" = PERIOD "TG_CLK_MCU" 32 MHz;

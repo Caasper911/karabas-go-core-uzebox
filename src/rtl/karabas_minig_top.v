@@ -6,9 +6,12 @@
  SRAM, the .uze loader, SNES pads, 720 x 480 video, sound) and the board: PLL, MCU link v2, OSD, HDMI,
  PCM5102, the LED matrix level meters.
 
- Clocks: one PLL, VCO 575 MHz (50 / 2 * 23): clk_cpu 28.75 MHz (the Uzebox has 28.636: 0.4 % fast,
- a frame of 60.29 Hz; also the pixel clock of the 720 x 480 video, the OSD, HDMI and the MCU link),
- clk_hdmi / clk_hdmi_n 143.75 MHz; FT_CLK_OUT = clk_cpu / 4 (7.2 MHz).
+ Clocks: PLL 1 (VCO 575 MHz = 50 / 2 * 23): clk_cpu 28.75 MHz (the Uzebox has 28.636: 0.4 % fast, a game
+ frame of 60.29 Hz; also the MCU link), clk_sdr 71.875 MHz (the frame buffer SDRAM; SDR_CLK from the
+ 225 degree output through an ODDR2), 25 MHz for PLL 2 (VCO 675 MHz = 25 * 27): clk_vid 27 MHz (CEA
+ 720 x 480p 59.94 Hz: the OSD, HDMI), clk_hdmi / clk_hdmi_n 135 MHz; FT_CLK_OUT = clk_cpu / 4 (7.2 MHz).
+ Video: uzebox.v writes the game picture into a frame buffer in the SDRAM (triple buffered) and reads
+ it out in standard timing (user 2026-11-20: an output locked to the game lost the monitors).
  OSD items (index = position in core.json): 0 Game (FL slot 0, .uze), 1 Reset (F12).
 */
 
@@ -130,14 +133,6 @@ assign SD_CS_N = 1'b1;
 assign SD_CLK = 1'b0;
 assign SD_DI = 1'b1;
 
-assign SDR_BA = 2'b00;
-assign SDR_A = 13'd0;
-assign SDR_CLK = 1'b0;
-assign SDR_DQM = 2'b11;
-assign SDR_WE_N = 1'b1;
-assign SDR_CAS_N = 1'b1;
-assign SDR_RAS_N = 1'b1;
-assign SDR_DQ = 16'bz;
 
 // ------------------------------------------------------------------ clocks
 
@@ -148,13 +143,13 @@ kg_pll #(
 	.DIVCLK_DIVIDE(2),       // PFD 25 MHz
 	.CLKFBOUT_MULT(23),      // VCO 575 MHz
 	.CLKOUT0_DIVIDE(20),     // clk_cpu 28.75 MHz
-	.CLKOUT1_DIVIDE(4),      // clk_hdmi 143.75 MHz
-	.CLKOUT2_DIVIDE(4),      // clk_hdmi_n 143.75 MHz, 180 degrees
-	.CLKOUT2_PHASE(180.0),
-	.CLKOUT3_DIVIDE(20),
+	.CLKOUT1_DIVIDE(8),      // clk_sdr 71.875 MHz
+	.CLKOUT2_DIVIDE(8),      // clk_sdr_ph 71.875 MHz, 225 degrees (SDR_CLK)
+	.CLKOUT2_PHASE(225.0),
+	.CLKOUT3_DIVIDE(23),     // 25 MHz for PLL 2
 	.CLKOUT4_DIVIDE(20),
 	.CLKOUT5_DIVIDE(20),
-	.BUFG_MASK(6'b000111)
+	.BUFG_MASK(6'b001111)
 ) pll (
 	.clk_in(CLK_50MHZ),
 	.rst(1'b0),
@@ -162,12 +157,41 @@ kg_pll #(
 	.locked(pll_locked)
 );
 wire clk_cpu = pll_clk[0];
-wire clk_hdmi = pll_clk[1];
-wire clk_hdmi_n = pll_clk[2];
+wire clk_sdr = pll_clk[1];
+wire clk_sdr_ph = pll_clk[2];
 
-(* KEEP = "TRUE" *) wire areset_async = ~pll_locked;
-wire areset;
+wire [5:0] vpll_clk;
+wire vpll_locked;
+kg_pll #(
+	.IBUFG(0),
+	.CLKIN_PERIOD(40.0),
+	.DIVCLK_DIVIDE(1),
+	.CLKFBOUT_MULT(27),      // VCO 675 MHz
+	.CLKOUT0_DIVIDE(25),     // clk_vid 27 MHz
+	.CLKOUT1_DIVIDE(5),      // clk_hdmi 135 MHz
+	.CLKOUT2_DIVIDE(5),      // clk_hdmi_n 135 MHz, 180 degrees
+	.CLKOUT2_PHASE(180.0),
+	.CLKOUT3_DIVIDE(25),
+	.CLKOUT4_DIVIDE(25),
+	.CLKOUT5_DIVIDE(25),
+	.BUFG_MASK(6'b000111)
+) vpll (
+	.clk_in(pll_clk[3]),
+	.rst(~pll_locked),
+	.clk_out(vpll_clk),
+	.locked(vpll_locked)
+);
+wire clk_vid = vpll_clk[0];
+wire clk_hdmi = vpll_clk[1];
+wire clk_hdmi_n = vpll_clk[2];
+
+(* KEEP = "TRUE" *) wire areset_async = ~(pll_locked & vpll_locked);
+wire areset, areset_sdr, areset_vid;
 kg_sync #(.W(1), .STAGES(2), .INIT(1'b1)) sync_areset (.clk(clk_cpu), .d(areset_async), .q(areset));
+kg_sync #(.W(1), .STAGES(2), .INIT(1'b1)) sync_areset_sdr (.clk(clk_sdr), .d(areset_async), .q(areset_sdr));
+kg_sync #(.W(1), .STAGES(2), .INIT(1'b1)) sync_areset_vid (.clk(clk_vid), .d(areset_async), .q(areset_vid));
+
+ODDR2 oddr_sdr_clk (.Q(SDR_CLK), .C0(clk_sdr_ph), .C1(~clk_sdr_ph), .CE(1'b1), .D0(1'b1), .D1(1'b0), .R(1'b0), .S(1'b0));
 
 // FT_CLK_OUT: clk_cpu / 4 (the FT812 needs a clock on Mini G, always)
 reg [1:0] ft_div = 2'd0;
@@ -269,6 +293,13 @@ wire ld_game = ld_kind == 2'd2 && ld_slot == 8'd0;
 
 // ------------------------------------------------------------------ the console
 
+wire [15:0] sdr_dq_o, sdr_dq_oe_n;
+genvar gi;
+generate
+	for (gi = 0; gi < 16; gi = gi + 1) begin : g_sdr_dq
+		assign SDR_DQ[gi] = sdr_dq_oe_n[gi] ? 1'bz : sdr_dq_o[gi];
+	end
+endgenerate
 wire [15:0] md_o;
 wire md_oe;
 assign MD = md_oe ? md_o : 16'bz;
@@ -278,11 +309,13 @@ wire [15:0] snd;
 wire [15:0] dbg_pc;
 
 uzebox console (
-	.clk(clk_cpu), .areset(areset), .reset(sw_reset),
+	.clk(clk_cpu), .clk_sdr(clk_sdr), .areset_sdr(areset_sdr), .clk_vid(clk_vid), .areset(areset), .reset(sw_reset),
 	.ld_start(ld_start & ld_game), .ld_active(ld_active & ld_game), .ld_end(ld_end & ld_game),
 	.ld_wr(ld_wr & ld_game), .ld_addr(ld_addr), .ld_data(ld_data),
 	.joy_l(joy_l), .joy_r(joy_r), .kbd(kbd),
 	.sram_a(MA), .sram_dq_i(MD), .sram_dq_o(md_o), .sram_dq_oe(md_oe), .sram_we_n(MWR_N), .sram_oe_n(MRD_N),
+	.sdr_a(SDR_A), .sdr_ba(SDR_BA), .sdr_dq_i(SDR_DQ), .sdr_dq_o(sdr_dq_o), .sdr_dq_oe_n(sdr_dq_oe_n),
+	.sdr_dqm(SDR_DQM), .sdr_ras_n(SDR_RAS_N), .sdr_cas_n(SDR_CAS_N), .sdr_we_n(SDR_WE_N),
 	.rgb(vid_rgb), .hs(vid_hs), .vs(vid_vs), .de(vid_de),
 	.audio(snd), .running(running), .dbg_pc(dbg_pc)
 );
@@ -297,7 +330,7 @@ kg_l2_osd_overlay osd (
 	.osd_fg(osd_fg), .osd_bg(osd_bg), .osd_alpha(osd_alpha), .osd_px(osd_px), .osd_py(osd_py),
 	.osd_pw(osd_pw), .osd_ph(osd_ph), .osd_place(osd_place), .osd_zoom(osd_zoom),
 	.icon_on(8'd0), .icon_act(8'd0),
-	.clk(clk_cpu),
+	.clk(clk_vid),
 	.rgb_i(vid_rgb), .hs_i(vid_hs), .vs_i(vid_vs), .de_i(vid_de),
 	.rgb_o(osd_rgb), .hs_o(osd_hs), .vs_o(osd_vs), .de_o(osd_de)
 );
@@ -308,29 +341,40 @@ kg_pcm5102 #(.DIV_BITS(2)) dac (.clk(clk_cpu), .reset(areset), .left(snd), .righ
 	.din(DAC_DAT), .bck(DAC_BCK), .lrck(DAC_WS));
 audio_peaks #(.PERIOD_BITS(20)) peaks (.clk(clk_cpu), .audio_l(snd), .audio_r(snd),
 	.cmd_wr(matrix_cmd_wr), .cmd(matrix_cmd));
-// 48 kHz strobe for the HDMI audio: + 48 per clock of 28.75 MHz modulo 28750
+// the sample to clk_vid: it changes once per game line (~1820 clocks): a toggle per change, taken
+// when it arrives
+reg [15:0] snd_d = 16'd0;
+reg snd_tg = 1'b0;
+always @(posedge clk_cpu) begin snd_d <= snd; if (snd != snd_d) snd_tg <= ~snd_tg; end
+reg [2:0] snd_tg_v = 3'd0;
+reg [15:0] snd_v = 16'd0;
+always @(posedge clk_vid) begin
+	snd_tg_v <= {snd_tg_v[1:0], snd_tg};
+	if (snd_tg_v[2] ^ snd_tg_v[1]) snd_v <= snd_d;
+end
+// 48 kHz strobe for the HDMI audio: + 48 per clock of 27 MHz modulo 27000
 reg [15:0] hacc = 16'd0;
 reg aud_stb = 1'b0;
-always @(posedge clk_cpu) begin
+always @(posedge clk_vid) begin
 	aud_stb <= 1'b0;
-	if (hacc >= 16'd28702) begin hacc <= hacc + 16'd48 - 16'd28750; aud_stb <= 1'b1; end
+	if (hacc >= 16'd26952) begin hacc <= hacc + 16'd48 - 16'd27000; aud_stb <= 1'b1; end
 	else hacc <= hacc + 16'd48;
 end
 
 reg dvi_only_p = 1'b0;
-always @(posedge clk_cpu) dvi_only_p <= dvi_only;
+always @(posedge clk_vid) dvi_only_p <= dvi_only;
 reg hdmi_hs = 1'b1, hdmi_vs = 1'b1, hdmi_de = 1'b0;
 reg [23:0] hdmi_rgb = 24'd0;
-always @(posedge clk_cpu) begin
+always @(posedge clk_vid) begin
 	hdmi_hs <= ~osd_hs;
 	hdmi_vs <= ~osd_vs;
 	hdmi_de <= osd_de;
 	hdmi_rgb <= osd_rgb;
 end
 hdmi_tx #(.SAMPLE_FREQ(48000)) hdmi (
-	.clk(clk_cpu), .sclk(clk_hdmi), .sclk_n(clk_hdmi_n), .reset(areset),
+	.clk(clk_vid), .sclk(clk_hdmi), .sclk_n(clk_hdmi_n), .reset(areset_vid),
 	.rgb(hdmi_rgb), .vsync(hdmi_vs), .hsync(hdmi_hs), .de(hdmi_de),
-	.audio_en(~dvi_only_p), .audio_l({ snd, 8'h00 }), .audio_r({ snd, 8'h00 }), .audio_clk(aud_stb),
+	.audio_en(~dvi_only_p), .audio_l({ snd_v, 8'h00 }), .audio_r({ snd_v, 8'h00 }), .audio_clk(aud_stb),
 	.tx_clk_n(TMDS_N[3]), .tx_clk_p(TMDS_P[3]), .tx_d_n(TMDS_N[2:0]), .tx_d_p(TMDS_P[2:0])
 );
 
