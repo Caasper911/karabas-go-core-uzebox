@@ -1,0 +1,33 @@
+{
+    "id": "uzebox",
+    "name": "Uzebox",
+    "build": "26112007",
+    "visible": true,
+    "type": "osd",
+    "order": 41,
+    "eeprom_bank": 255,
+    "rtc_mode": 0,
+    "roms": [],
+    "boards": {
+        "minig": {
+            "link": 2,
+            "build": "26112007",
+            "bitstream": "karabas_minig.bin"
+        }
+    },
+    "osd": [
+        {
+            "type": "FL",
+            "name": "Game",
+            "slot": 0,
+            "extensions": ".uze",
+            "dir": "/uzebox",
+            "hotkey": "Menu+F1"
+        },
+        {
+            "type": "T",
+            "name": "Reset",
+            "hotkey": "F12"
+        }
+    ]
+}

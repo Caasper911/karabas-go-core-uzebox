@@ -62,3 +62,7 @@ src/roms/*.hex
 __pycache__/
 src/sim/build/
 src/synth/build/
+src/build_*.log
+src/kg_*.stamp
+src/xst/
+src/karabas_*.bin
