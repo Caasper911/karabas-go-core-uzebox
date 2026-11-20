@@ -2,7 +2,8 @@
 // nextor_sd.v of core-msx, GPL-3.0). Changed: the SPI slave on the pins is replaced by the bytes of the SPI master of the
 // ATmega644 (avr_io_m644): its SCK is clk / 2 at fosc / 2, too fast to sample. An exchange: the master takes out_byte
 // (the card's byte, from its state before the exchange) and gives tx_in with xfer_in at the end of its transfer; the
-// card takes it the next clock. Everything else as the original.
+// card takes it the next clock. Also: CMD59 is taken, a read block ends with its real CRC16 (Bootloader5 turns the
+// CRC check on and checks it; the original sent FF FF). Everything else as the original.
 `timescale 1ns / 1ps
 // kg_sd_emu - an SD card on the SPI pins of OSCA's SD interface (spi_sch5), emulated on a hard disk image of the
 // file mounter of the MCU (img_sdc of karabas-go-modules) instead of a physical card.
@@ -146,7 +147,8 @@ wire [21:0] c_size = size[31:19] == 13'd0 ? 22'd0 : { 9'd0, size[31:19] } - 22'd
 
 // (a continuous assignment: an always @* of cmd would not run in a simulation while cmd keeps its initial value, CMD0)
 wire cmd_bad = !(cmd == 6'd0 || cmd == 6'd1 || cmd == 6'd8 || cmd == 6'd9 || cmd == 6'd10 || cmd == 6'd12 || cmd == 6'd16 ||
-	cmd == 6'd17 || cmd == 6'd18 || cmd == 6'd24 || cmd == 6'd25 || cmd == 6'd55 || cmd == 6'd58);
+	cmd == 6'd17 || cmd == 6'd18 || cmd == 6'd24 || cmd == 6'd25 || cmd == 6'd55 || cmd == 6'd58 ||
+	cmd == 6'd59);   // karabas (uzebox): CMD59 CRC_ON_OFF (Bootloader5 turns the CRC check on)
 wire [7:0] r1 = { 5'd0, (acmd ? 1'b0 : cmd_bad), 1'b0, idle };
 
 // the bytes of a response after R1 (ridx 1..): R7, OCR, the CSD / CID with their token and CRC
@@ -220,6 +222,21 @@ always @* begin
 	endcase
 end
 
+// karabas (uzebox): the CRC16 (CCITT, 0x1021, from 0) of the data block being read, sent after it
+reg [15:0] rcrc = 16'd0;
+function [15:0] crc16_byte;
+	input [15:0] c;
+	input [7:0]  d;
+	integer i;
+	reg [15:0] x;
+	begin
+		x = c ^ {d, 8'd0};
+		for (i = 0; i < 8; i = i + 1)
+			x = x[15] ? {x[14:0], 1'b0} ^ 16'h1021 : {x[14:0], 1'b0};
+		crc16_byte = x;
+	end
+endfunction
+
 // the byte the card gives in the exchange
 reg [7:0] out_r;
 always @* begin
@@ -227,6 +244,7 @@ always @* begin
 		S_RESP: out_r = ridx == 5'd0 ? r1 : resp;
 		S_RD_WAIT: out_r = ready ? 8'hFE : 8'hFF;
 		S_RD_DATA: out_r = buf_q;
+		S_RD_CRC: out_r = crc1 ? rcrc[7:0] : rcrc[15:8];   // karabas (uzebox): the real CRC16 (Bootloader5 checks it)
 		S_WR_RESP: out_r = 8'h05;
 		S_WR_BUSY: out_r = ready ? 8'hFF : 8'h00;
 		default: out_r = 8'hFF;
@@ -307,6 +325,7 @@ always @(posedge clk) begin
 				if (state == S_RD_WAIT && sent == 8'hFE && !is_cmd) begin
 					// the token went out (in this exchange; ready may have come after the byte was taken): the data from byte 0 (buf_q)
 					state <= S_RD_DATA;
+					rcrc <= 16'd0;
 				end else if (is_cmd) begin
 					if (state == S_RD_WAIT) begin
 						// CMD12 in a multiple block read: the block on its way is not wanted
@@ -364,6 +383,7 @@ always @(posedge clk) begin
 			end
 			S_RD_DATA: begin
 				buf_addr <= buf_addr + 9'd1;
+				rcrc <= crc16_byte(rcrc, sent);
 				if (buf_addr == 9'd511) begin
 					// the last byte went out: the CRC
 					crc1 <= 1'b0;

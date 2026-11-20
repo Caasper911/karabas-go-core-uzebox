@@ -222,7 +222,7 @@ int main(int argc, char **argv) {
 	crc_init();
 	if (argc < 2) { fprintf(stderr, "usage: %s game.uze [-n frames] [-p png] [-e n] [-k f:n:key]\n", argv[0]); return 2; }
 	int max_frames = 10;
-	std::vector<int> k_at, k_n, k_key;      // -k frame:frames:usb_key, may repeat
+	std::vector<int> k_at, k_n, k_key;      // -k frame:frames:usb_key (output frames), may repeat
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "-n") && i + 1 < argc) max_frames = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-p") && i + 1 < argc) png_prefix = argv[++i];
@@ -312,7 +312,7 @@ int main(int argc, char **argv) {
 	while (out_frames < max_frames) {
 		uint64_t kb = 0;
 		for (size_t q = 0; q < k_at.size(); q++)
-			if (ref_frames >= k_at[q] && ref_frames < k_at[q] + k_n[q]) kb = (uint64_t)k_key[q] << 8;
+			if (out_frames >= k_at[q] && out_frames < k_at[q] + k_n[q]) kb = (uint64_t)k_key[q] << 8;
 		top->kbd = kb;
 		cpu_cycle();
 		if (getenv("PCDBG") && top->running && (cyc % 200000) == 0) printf("cycle %llu: pc %04x, game frame %d, kbd %llx%c", (unsigned long long)cyc, top->dbg_pc, ref_frames, (unsigned long long)top->kbd, 10);
