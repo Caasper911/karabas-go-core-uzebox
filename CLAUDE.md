@@ -25,7 +25,7 @@ The rules of the other karabas-go cores apply: standard video timing with syncs 
 - Licence GPL-3.0 (as Uzebox); keep the notices of imported code.
 - Never edit `upstream/`; changes go to `src/`.
 - **Ask the user before every check on the board.** Ask before a firmware flash.
-- One branch per phase of `docs/PLAN.md`, one PR at its end. Mini G only while working on one feature, all boards for a release.
+- One branch per phase of `docs/PLAN.md`, one PR at its end (repository: private `Caasper911/karabas-go-core-uzebox` since 2026-11-20; phases Ф0..Ф4 were merged locally before it existed). Mini G only while working on one feature, all boards for a release.
 - Keep README.md / README.ru.md / CLAUDE.md / docs/PLAN.md up to date with every change (docs in Russian, CLAUDE.md in English).
 
 ## Memory
