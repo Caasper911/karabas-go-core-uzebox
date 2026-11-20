@@ -214,6 +214,7 @@ int main(int argc, char **argv) {
 	for (auto &h : rise_hist) if (h.second > 20) printf(" %llu:%llu", (unsigned long long)h.first, (unsigned long long)h.second);
 	printf("%c", 10);
 	printf("game draws: cycles %d..%d after the line start (window 168..1607), rows %d..%d (window 0..223)%c", ext_x0, ext_x1, ext_y0, ext_y1, 10);
+	{ auto *R = top->rootp; printf("io: SPCR %02x SPSR %02x SPDR %02x DDRA %02x PORTA %02x DDRD %02x PORTD %02x UCSR0B %02x%c", R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2C], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2D], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2E], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x01], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x02], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0A], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0B], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0xA1], 10); }
 	printf("game frames %d, output frames %d, with a picture %d\n", ref_frames, out_frames, shown);
 	printf("%s: %d frames checked, %d differ\n", bad || !checked ? "FAIL" : "OK", checked, bad);
 	return bad || !checked || mism;
