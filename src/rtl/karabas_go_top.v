@@ -19,7 +19,9 @@
  it out in standard timing (user 2026-11-20: an output locked to the game lost the monitors).
  OSD items (index = position in core.json): 0 Game (FL slot 0, .uze), 1 Reset (F12), 2 SD card (Real: the card of
  the board on SD_*, Image: kg_sd_emu on the image of item 3), 3 SD image (F slot 1), 4 Bootloader (Off: the .uze of
- item 0 at 0, On: Bootloader5 of the .kg at 0x7800; Reset after a change). The EEPROM is saved to <game>.sav (slot 2, kg_bk_ram).
+ item 0 at 0, On: Bootloader5 of the .kg at 0x7800; Reset after a change), 5 Keyboard (Auto / Pad / PS/2: the USB keyboard
+ as pad 1 or as the Uzebox keyboard in port 2), 6 Mouse (Port 2 / Port 1 / Off: the USB mouse as the SNES mouse), 7 SPI RAM
+ (8 MB / 128 KB). The EEPROM is saved to <game>.sav (slot 2, kg_bk_ram). The ESP8266 is on USART0 (UART_*).
 */
 
 module karabas_go_top (
