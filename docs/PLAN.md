@@ -251,7 +251,14 @@ VGA (Go). MIDI только на выход — MIDI IN Uzebox не перено
     8105 LUT (53%), все ограничения выполнены. На плате (2026-11-20): ae.uze и BadApple с образа — **работают**.
   - Ускорение на стороне MCU (karabas-go-firmware, на будущее): `FF_USE_FASTSEEK 1` + таблица кластеров при
     монтировании образа — уберёт паузы.
-- [ ] **Ф3. Go и Mini.** Верхи генерируются из верха Mini G (как `mktops.py` в agon); VGA на Go, сборка всех плат.
+- [ ] **Ф3. Go и Mini** (ветка `f3-go-mini` от `f4-kbd-esp`, 2026-11-20: пользователь — «делай для Го и мини», Ф4 на плате
+  ещё не вся проверена). `src/tools/mktops.py` (из core-agon) делает `karabas_mini_top.v` и `karabas_go_top.v` из
+  верха Mini G и временную часть их ucf (выводы — из core-agon / core-doom); менять только верх Mini G и запускать
+  скрипт. Mini (до rev.G): звук сигма-дельтой на `AUDIO_L` / `AUDIO_R` (`clk_cpu`), `MCU_SCK` не на тактовом выводе,
+  `FT_RESET` = 1, `FT_CLK_OUT` = 7.2 МГц, T3 = 0. Go: VGA 720 x 480p (`V_CLK` = `clk_vid` через ODDR2) вместо HDMI,
+  PCM5102 с `DAC_LRCK` / `DAC_MUTE` = 1, связь с MCU на `MCU_SPI_*` (INT на `MCU_SPI_IO[0]`), выходы дисковода 0,
+  `FLASH_CS_N` = 1, `FT_OE_N` = 1. Обе: SAM2695 в сбросе, `ESP_RESET_N` / `ESP_BOOT_N` — Z (сброс ESP через PD3 из
+  программ Uzenet не подключён). Сборка 26112021 — все три платы.
 - [ ] **Ф4. Uzenet, клавиатура, мышь** (ветка `f4-kbd-esp`, начата 2026-11-20; Ф3 отложена по решению пользователя).
   - Клавиатура Uzebox — адаптер на ATtiny85 во втором порту пада (`schematics/Keyboard-Interface`,
     `kernel/keyboard.c`, uzem `uzeKbState`): модель в `uze_pads.v`. Старт обмена — переход в «такт 0,
