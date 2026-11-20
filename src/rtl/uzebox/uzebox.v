@@ -2,8 +2,10 @@
 // .uze loader, two SNES pads, the video (uze_video: lines of the game -> uze_fb: frame buffer in the board
 // SDRAM -> CEA 720 x 480p in clk_vid) and the 8-bit sound.
 //
-// The CPU is held in reset until a game is loaded (an FL load of a .uze, kind 2), while a load runs and
-// while `reset` is high (OSD Reset). Sound: the OCR2A sample the kernel writes once per line
+// boot = 0 (Game): the CPU starts at 0 once a game is loaded (an FL load of a .uze); boot = 1 (Loader):
+// Bootloader5 (a raw ROM load at 0xF000 from the .kg) starts at 0x7800 (BOOTRST) once it is loaded and flashes
+// the games from the SD card by SPM. The CPU is held in reset while a load runs, while the EEPROM file is read
+// (kg_bk_ram: <game>.sav next to the .uze, slot 2 of the file mounter) and while `reset` is high (OSD Reset). Sound: the OCR2A sample the kernel writes once per line
 // (15.7 kHz), unsigned 8 bit, as `audio` (two's complement 16 bit, an eighth of full scale, clk).
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 
@@ -17,7 +19,9 @@ module uzebox #(
 	input             areset,         // clk domain
 	input             reset,          // OSD reset, clk domain
 
-	input             ld_start,       // a new file (FL item of the game)
+	input             boot,           // 0 the game from the OSD, 1 Bootloader5
+	input             ld_raw,         // the load is a ROM (Bootloader5 at its address), not a .uze
+	input             ld_start,       // a new file (FL item of the game) / ROM
 	input             ld_active,
 	input             ld_end,
 	input             ld_wr,
@@ -41,18 +45,26 @@ module uzebox #(
 	output            sd_sck,
 	output            sd_mosi,
 	input             sd_miso,
-	input             img_mounted,      // the img_sdc side of kg_mcu2 (its slot of the image), clk domain
-	input      [31:0] img_size,
-	output            hd_rd,
-	output            hd_wr,
-	output     [31:0] hd_lba,
-	input             hd_busy,
-	input             hd_done,
-	input             hd_error,
-	input             hd_byte_in_strobe,
-	input      [8:0]  hd_byte_addr,
-	input      [7:0]  hd_byte_in_data,
-	output     [7:0]  hd_byte_out_data,
+	// the file mounter of kg_mcu2 (SDC_*): slot 1 the SD image (kg_sd_emu), slot 2 the EEPROM file (kg_bk_ram)
+	input      [7:0]  sdc_img_mounted,
+	input      [63:0] sdc_img_size,
+	output     [7:0]  sdc_rd,
+	output     [7:0]  sdc_wr,
+	output     [31:0] sdc_sector,
+	input             sdc_busy,
+	input             sdc_done,
+	input             sdc_error,
+	input      [2:0]  sdc_slot,
+	input             sdc_byte_in_strobe,
+	input      [8:0]  sdc_byte_addr,
+	input      [7:0]  sdc_byte_in_data,
+	output     [7:0]  sdc_byte_out_data,
+	input      [7:0]  img_flush,
+	output            bk_mount,
+	output            bk_flushed,
+	output     [31:0] bk_size,
+	output     [7:0]  bk_kind,
+	output     [7:0]  bk_result,
 
 	output     [12:0] sdr_a,
 	output     [1:0]  sdr_ba,
@@ -74,6 +86,11 @@ module uzebox #(
 	output     [15:0] dbg_pc
 );
 
+// SD image (kg_sd_emu) <-> the file mounter
+wire hd_rd, hd_wr;
+wire [31:0] hd_lba;
+wire [7:0] hd_byte_out;
+
 // SPI RAM <-> SDRAM (uze_spiram <-> uze_fb)
 wire        sr_req_tg, sr_we, sr_ack_tg;
 wire [14:0] sr_word;
@@ -82,15 +99,16 @@ wire [7:0]  sr_byte;
 wire [31:0] sr_rdata;
 
 // ---------------------------------------------------------------- reset and load
-reg loaded = 1'b0, cpu_rst = 1'b1;
-wire loading = ld_active | ~loaded;
+reg game_loaded = 1'b0, rom_loaded = 1'b0, cpu_rst = 1'b1;
+wire bk_busy;
 always @(posedge clk) begin
-	if (areset) loaded <= 1'b0;
-	else if (ld_start) loaded <= 1'b0;
-	else if (ld_end) loaded <= 1'b1;
-	cpu_rst <= areset | reset | ld_active | ~loaded;
+	if (areset) begin game_loaded <= 1'b0; rom_loaded <= 1'b0; end
+	else if (ld_start) begin if (ld_raw) rom_loaded <= 1'b0; else game_loaded <= 1'b0; end
+	else if (ld_end) begin if (ld_raw) rom_loaded <= 1'b1; else game_loaded <= 1'b1; end
+	cpu_rst <= areset | reset | ld_active | bk_busy | (boot ? ~rom_loaded : ~game_loaded);
 end
 assign running = ~cpu_rst;
+wire loading = ld_active;
 
 // ---------------------------------------------------------------- the ATmega644
 wire [14:0] pm_addr, pm_addr_nx;
@@ -103,22 +121,34 @@ wire        spi_sck, spi_mosi, spi_start, spi_done;
 wire [7:0]  spi_tx;
 wire        spi_ext;
 wire [7:0]  spi_rx_ext;
+wire        spm_fill, spm_erase, spm_write, spm_busy;
+wire [15:0] spm_z, spm_r;
+wire        ee_req, ee_we, ee_ack, ee_cpu_wr;
+wire [10:0] ee_cpu_addr;
+wire [14:0] ee_addr;
+wire [7:0]  ee_din, ee_dout;
 
 atmega644 mcu (
-	.clk(clk), .rst(cpu_rst),
+	.clk(clk), .rst(cpu_rst), .reset_vec(boot ? 15'h7800 : 15'h0000),
 	.pm_addr(pm_addr), .pm_addr_nx(pm_addr_nx), .pm_rdata(pm_rdata),
 	.pina({porta[7:2], pad_data}), .pinb(portb), .pinc(8'd0), .pind(portd),
 	.porta(porta), .ddra(ddra), .portb(portb), .ddrb(ddrb), .pixel(pixel), .portd(portd), .ddrd(ddrd),
 	.ocr2a(ocr2a), .sample(sample),
 	.spi_on(1'b1), .spi_sck(spi_sck), .spi_mosi(spi_mosi), .spi_miso(sd_miso), .spi_start(spi_start),
 	.spi_tx(spi_tx), .spi_done(spi_done), .spi_ext(spi_ext), .spi_rx_ext(spi_rx_ext),
+	.spm_fill(spm_fill), .spm_erase(spm_erase), .spm_write(spm_write), .spm_z(spm_z), .spm_r(spm_r),
+	.spm_busy(spm_busy),
+	.ee_req(ee_req), .ee_we(ee_we), .ee_addr(ee_addr[10:0]), .ee_din(ee_din), .ee_ack(ee_ack), .ee_dout(ee_dout),
+	.ee_cpu_wr(ee_cpu_wr), .ee_cpu_addr(ee_cpu_addr),
 	.insn_start(), .dbg_pc(dbg_pc)
 );
 
 uze_pm_sram pm (
 	.clk(clk), .loading(loading | cpu_rst),
 	.pm_addr_nx(pm_addr_nx), .pm_rdata(pm_rdata),
-	.ld_wr(ld_wr), .ld_addr(ld_addr), .ld_data(ld_data), .ld_busy(),
+	.ld_wr(ld_wr), .ld_raw(ld_raw), .ld_addr(ld_addr), .ld_data(ld_data), .ld_busy(),
+	.spm_fill(spm_fill), .spm_erase(spm_erase), .spm_write(spm_write), .spm_z(spm_z), .spm_r(spm_r),
+	.spm_busy(spm_busy),
 	.sram_a(sram_a), .sram_dq_i(sram_dq_i), .sram_dq_o(sram_dq_o), .sram_dq_oe(sram_dq_oe),
 	.sram_we_n(sram_we_n), .sram_oe_n(sram_oe_n)
 );
@@ -193,11 +223,41 @@ uze_spiram spiram (
 kg_sd_emu #(.CACHE(1)) sd_emu (
 	.clk(clk), .reset(cpu_rst),
 	.xfer_in(spi_done), .tx_in(spi_txl), .cs_n(cs_sd_n | ~sd_image), .out_byte(sd_out),
-	.img_mounted(img_mounted), .img_size(img_size),
-	.hd_rd(hd_rd), .hd_wr(hd_wr), .hd_lba(hd_lba), .hd_busy(hd_busy), .hd_done(hd_done), .hd_error(hd_error),
-	.hd_byte_in_strobe(hd_byte_in_strobe), .hd_byte_addr(hd_byte_addr), .hd_byte_in_data(hd_byte_in_data),
-	.hd_byte_out_data(hd_byte_out_data), .waiting()
+	.img_mounted(sdc_img_mounted[1]), .img_size(|sdc_img_size[63:32] ? 32'hFFFFFE00 : sdc_img_size[31:0]),
+	.hd_rd(hd_rd), .hd_wr(hd_wr), .hd_lba(hd_lba), .hd_busy(sdc_busy && sdc_slot == 3'd1),
+	.hd_done(sdc_done && sdc_slot == 3'd1), .hd_error(sdc_error),
+	.hd_byte_in_strobe(sdc_byte_in_strobe && sdc_slot == 3'd1), .hd_byte_addr(sdc_byte_addr),
+	.hd_byte_in_data(sdc_byte_in_data), .hd_byte_out_data(hd_byte_out), .waiting()
 );
+
+// ---------------------------------------------------------------- the EEPROM file (kg_bk_ram, slot 2)
+// 2 KB = 4 sectors, <game>.sav next to the .uze: mounted after a game load (kind 0), read into the EEPROM before
+// the CPU starts, the sectors the CPU writes saved ~1 s after its last write and before another game / core.
+reg  game_end = 1'b0;
+always @(posedge clk) game_end <= ld_end && !ld_raw;
+wire [7:0]  bk_rd, bk_wr, bk_out;
+wire [31:0] bk_sector;
+kg_bk_ram #(.SLOT(3'd2), .LINK(2)) bk (
+	.clk(clk), .reset(areset | (ld_start && !ld_raw)),
+	.start(game_end), .size(7'd4), .kind(8'd0), .busy(bk_busy), .mounted(), .saving(), .save_error(),
+	.wr(ee_cpu_wr), .wr_addr({4'd0, ee_cpu_addr}),
+	.mem_req(ee_req), .mem_we(ee_we), .mem_addr(ee_addr), .mem_din(ee_din), .mem_ack(ee_ack), .mem_dout(ee_dout),
+	.img_mounted(8'd0), .img_size(64'd0), .img_data_wr(1'b0), .img_data_addr(9'd0), .img_data(8'd0),
+	.img_result_wr(1'b0), .img_result(8'd0), .img_sum(16'd0), .img_flush(img_flush), .img_q_wr(), .img_q_di(),
+	.img_q_ack(1'b0),
+	.sdc_img_mounted_i(sdc_img_mounted), .sdc_img_size_i(sdc_img_size), .sdc_rd_o(bk_rd), .sdc_wr_o(bk_wr),
+	.sdc_sector_o(bk_sector), .sdc_busy_i(sdc_busy), .sdc_done_i(sdc_done), .sdc_error_i(sdc_error),
+	.sdc_slot_i(sdc_slot), .sdc_byte_in_strobe_i(sdc_byte_in_strobe), .sdc_byte_addr_i(sdc_byte_addr),
+	.sdc_byte_in_data_i(sdc_byte_in_data), .sdc_byte_out_data_o(bk_out),
+	.bk_mount(bk_mount), .bk_flushed(bk_flushed), .bk_size(bk_size), .bk_kind(bk_kind), .bk_result(bk_result)
+);
+
+// the requests of both slots to the mounter; it serves the lowest slot first: the sector of the slot being
+// served, or of the lowest one asking
+assign sdc_rd = {bk_rd[7:3], bk_rd[2], hd_rd, 1'b0};
+assign sdc_wr = {bk_wr[7:3], bk_wr[2], hd_wr, 1'b0};
+assign sdc_sector = (sdc_busy ? sdc_slot == 3'd1 : (hd_rd | hd_wr)) ? hd_lba : bk_sector;
+assign sdc_byte_out_data = sdc_slot == 3'd1 ? hd_byte_out : bk_out;
 
 // ---------------------------------------------------------------- sound
 reg sample_d = 1'b0;                 // OCR2A holds the new sample one clock after the write

@@ -134,6 +134,7 @@ int main(int argc, char **argv) {
 	if (!ok) { fprintf(stderr, "cannot load %s\n", game); return 2; }
 	memcpy(pm, u->progmem, sizeof(pm));
 	u->decodeFlash();
+	u->SPL = 0xFF; u->SPH = 0x10;            // the ATmega644 resets SP to RAMEND (Uzem leaves 0)
 	if (lockstep) {
 		SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
 		SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);

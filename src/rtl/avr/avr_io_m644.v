@@ -27,6 +27,7 @@ module avr_io_m644 (
 
 	output            irq,
 	output reg [5:0]  irq_vec,
+	output reg        ivsel,        // MCUCR IVSEL: the vectors are in the boot section (0x7800 + vector)
 	input             irq_ack,
 	input             wdr,
 	input             insn_end,
@@ -56,7 +57,27 @@ module avr_io_m644 (
 	output     [7:0]  spi_tx,
 	output            spi_done,     // one clock: the transfer ends, SPDR takes the received byte
 	input             spi_ext,      // at spi_done: take spi_rx_ext (an emulated device) instead of MISO
-	input      [7:0]  spi_rx_ext
+	input      [7:0]  spi_rx_ext,
+
+	// SPM (self programming): the operation for the program memory, SPMEN cleared when it is done
+	input             spm,          // the CPU executes SPM: spm_z = Z, spm_r = r1:r0
+	input      [15:0] spm_z,
+	input      [15:0] spm_r,
+	output            spm_fill,     // one clock: page buffer word spm_z[7:1] = spm_r
+	output            spm_erase,    // one clock: erase page spm_z[15:8]
+	output            spm_write,    // one clock: write the page buffer to page spm_z[15:8]
+	input             spm_busy,     // the program memory erases / writes (the CPU is halted meanwhile)
+	input             ext_halt,     // halt the CPU (SPM)
+
+	// EEPROM: a second port (kg_bk_ram: the .sav file) and the writes of the CPU
+	input             ee_req,       // held until ee_ack
+	input             ee_we,
+	input      [10:0] ee_addr,
+	input      [7:0]  ee_din,
+	output reg        ee_ack,
+	output reg [7:0]  ee_dout,
+	output            ee_cpu_wr,    // the CPU wrote eeprom[ee_cpu_addr]
+	output     [10:0] ee_cpu_addr
 );
 
 localparam A_PINA = 8'h00, A_DDRA = 8'h01, A_PORTA = 8'h02, A_PINB = 8'h03, A_DDRB = 8'h04, A_PORTB = 8'h05,
@@ -64,7 +85,7 @@ localparam A_PINA = 8'h00, A_DDRA = 8'h01, A_PORTA = 8'h02, A_PINB = 8'h03, A_DD
            A_TIFR1 = 8'h16, A_EECR = 8'h1F, A_EEDR = 8'h20, A_EEARL = 8'h21, A_EEARH = 8'h22,
            A_WDTCSR = 8'h40, A_TIMSK1 = 8'h4F, A_TCCR1B = 8'h61, A_TCNT1L = 8'h64, A_TCNT1H = 8'h65,
            A_OCR1AL = 8'h68, A_OCR1AH = 8'h69, A_OCR1BL = 8'h6A, A_OCR1BH = 8'h6B,
-           A_TCCR2B = 8'h91, A_OCR2A = 8'h93, A_SPCR = 8'h2C, A_SPSR = 8'h2D, A_SPDR = 8'h2E;
+           A_TCCR2B = 8'h91, A_OCR2A = 8'h93, A_SPCR = 8'h2C, A_SPSR = 8'h2D, A_SPDR = 8'h2E, A_SPMCSR = 8'h37, A_MCUCR = 8'h35;
 localparam WDT_CYCLES = 20'd457142;
 
 wire wr = io_wr;
@@ -198,7 +219,18 @@ always @(posedge clk) begin
 	if (ee_wr) eeprom[eear] <= eedr;
 	ee_q <= eeprom[eear];
 end
-assign halt = ee_halt != 3'd0;
+// port b: kg_bk_ram (a request at a time, acked the clock after)
+initial begin ee_ack = 1'b0; ee_dout = 8'd0; end
+always @(posedge clk) begin
+	ee_ack <= ee_req && !ee_ack;
+	if (ee_req && !ee_ack) begin
+		if (ee_we) eeprom[ee_addr] <= ee_din;
+		ee_dout <= eeprom[ee_addr];
+	end
+end
+assign ee_cpu_wr = ee_wr;
+assign ee_cpu_addr = eear;
+assign halt = ee_halt != 3'd0 || ext_halt;
 always @(posedge clk) begin
 	if (rst) begin
 		eecr <= 8'd0; eedr <= 8'd0; eear <= 11'd0; ee_halt <= 3'd0; ee_rd <= 1'b0; ee_wr <= 1'b0;
@@ -293,6 +325,43 @@ always @(posedge clk) begin
 	end
 end
 
+// ---------------------------------------------------------------- SPM
+// SPMCSR (0x37): SPMEN 0, PGERS 1, PGWRT 2, BLBSET 3, RWWSRE 4, SIGRD 5, RWWSB 6, SPMIE 7. An SPM with SPMEN set
+// does: PGERS -> erase, PGWRT -> write, RWWSRE / BLBSET / SIGRD -> nothing, none -> fill the page buffer; the
+// bits clear when the operation is done (the program memory holds spm_busy, the CPU halted meanwhile).
+reg  [7:0] spmcsr = 8'd0;
+wire       spm_go = spm && spmcsr[0];
+assign spm_fill  = spm_go && spmcsr[5:1] == 5'd0;
+assign spm_erase = spm_go && spmcsr[1];
+assign spm_write = spm_go && spmcsr[2] && !spmcsr[1];
+reg        spm_wait = 1'b0;
+always @(posedge clk) begin
+	if (rst) begin spmcsr <= 8'd0; spm_wait <= 1'b0; end
+	else begin
+		if (wr && io_addr == A_SPMCSR) spmcsr <= io_wdata;
+		if (spm_go) begin
+			if (spm_erase || spm_write) spm_wait <= 1'b1;
+			else spmcsr[5:0] <= 6'd0;               // fill, RWWSRE, ...: done at once
+		end
+		if (spm_wait && !spm_busy && !spm_go) begin spm_wait <= 1'b0; spmcsr[5:0] <= 6'd0; end
+	end
+end
+
+// ---------------------------------------------------------------- MCUCR IVSEL (Bootloader5 moves the vectors)
+// a write with IVCE allows a change of IVSEL by the next write within 4 cycles (datasheet)
+reg [2:0] ivce_cnt = 3'd0;
+initial ivsel = 1'b0;
+always @(posedge clk) begin
+	if (rst) begin ivsel <= 1'b0; ivce_cnt <= 3'd0; end
+	else begin
+		if (ivce_cnt != 3'd0) ivce_cnt <= ivce_cnt - 3'd1;
+		if (wr && io_addr == A_MCUCR) begin
+			if (io_wdata[0]) ivce_cnt <= 3'd4;
+			else if (ivce_cnt != 3'd0) begin ivsel <= io_wdata[1]; ivce_cnt <= 3'd0; end
+		end
+	end
+end
+
 // ---------------------------------------------------------------- read
 always @* begin
 	case (io_addr)
@@ -326,6 +395,7 @@ always @* begin
 		A_SPCR:   io_rdata = spcr;
 		A_SPSR:   io_rdata = spsr;
 		A_SPDR:   io_rdata = spdr_rx;
+		A_SPMCSR: io_rdata = spmcsr;
 		default:  io_rdata = gen_q;
 	endcase
 end

@@ -138,41 +138,57 @@ static void vid_capture() {
 	prev_vs = vs; prev_de = de;
 }
 
-// ------------------------------------------------------------------ the file mounter of the MCU (SD image)
-// As kg_l2_img on the sdc side: a request (hd_rd / hd_wr) is taken (hd_busy), served after a delay like the MCU
-// (IMG_DELAY clocks), a read sector comes as 512 hd_byte_in_strobe, a written one is read through hd_byte_addr /
-// hd_byte_out_data, then hd_done.
-static std::vector<uint8_t> img;
-static int img_state = 0, img_i = 0, img_wait = 0, img_mount = 0;
+// ------------------------------------------------------------------ the file mounter of the MCU (kg_mcu2 SDC_*)
+// Slot 1: the SD image (-i), mounted at the start; slot 2: the EEPROM file of kg_bk_ram (-s, else 2 KB of zeros),
+// mounted when the core asks (bk_mount). One request at a time, the lowest slot first, served after a delay like
+// the MCU (IMG_DELAY clocks): a read sector comes as 512 sdc_byte_in_strobe, a written one is read through
+// sdc_byte_addr / sdc_byte_out_data (4 clocks per byte), then sdc_done.
+static std::vector<uint8_t> files[8];
+static std::vector<uint8_t> rom;
+static int boot_loader = 0;
+static const char *sav_out = nullptr;
+static bool mounted[8];
+static int img_state = 0, img_i = 0, img_wait = 0, img_slot = 0;
 static uint32_t img_lba = 0;
-static int img_reads = 0, img_writes = 0;
+static int img_reads = 0, img_writes = 0, bk_mounts = 0;
 static const int IMG_DELAY = 6000;
 static void img_tick() {
-	top->hd_done = 0; top->hd_byte_in_strobe = 0; top->img_mounted = 0;
-	if (img.empty()) return;
-	if (img_mount == 0 && cyc > 50) { top->img_mounted = 1; top->img_size = img.size(); img_mount = 1; return; }
+	top->sdc_done = 0; top->sdc_byte_in_strobe = 0; top->sdc_img_mounted = 0; top->sdc_error = 0;
+	if (!files[1].empty() && !mounted[1] && cyc > 50) {
+		top->sdc_img_mounted = 1 << 1; top->sdc_img_size = files[1].size(); mounted[1] = true; return;
+	}
+	if (top->bk_mount && !mounted[2]) {
+		if (files[2].empty()) files[2].assign(2048, 0);
+		top->sdc_img_mounted = 1 << 2; top->sdc_img_size = files[2].size(); mounted[2] = true; bk_mounts++; return;
+	}
+	std::vector<uint8_t> &f = files[img_slot];
 	switch (img_state) {
-	case 0:
-		if (top->hd_rd || top->hd_wr) {
-			img_state = top->hd_rd ? 1 : 3; img_lba = top->hd_lba; img_wait = IMG_DELAY; img_i = 0; top->hd_busy = 1;
+	case 0: {
+		int rq = top->sdc_rd | top->sdc_wr;
+		for (int sl = 0; sl < 8; sl++) if (rq & (1 << sl)) {
+			img_slot = sl; img_state = (top->sdc_rd & (1 << sl)) ? 1 : 3; img_lba = top->sdc_sector;
+			img_wait = IMG_DELAY; img_i = 0; top->sdc_busy = 1; top->sdc_slot = sl;
+			break;
 		}
 		break;
+	}
 	case 1:                                   // read: wait, then the bytes
 		if (img_wait) { img_wait--; break; }
 		if ((cyc & 3) == 0) {
 			size_t a = (size_t)img_lba * 512 + img_i;
-			top->hd_byte_addr = img_i; top->hd_byte_in_data = a < img.size() ? img[a] : 0; top->hd_byte_in_strobe = 1;
-			if (++img_i == 512) img_state = 2;
+			top->sdc_byte_addr = img_i; top->sdc_byte_in_data = a < f.size() ? f[a] : 0; top->sdc_byte_in_strobe = 1;
+			if (++img_i == 512) { img_state = 2; img_reads++; }
 		}
 		break;
-	case 2: top->hd_done = 1; top->hd_busy = 0; img_state = 0; img_reads++; break;
-	case 3:                                   // write: wait, then read the bytes out (latency 3)
+	case 2: top->sdc_done = 1; top->sdc_busy = 0; img_state = 0; break;
+	case 3:                                   // write: wait, then each byte: its address, 3 clocks, the byte
 		if (img_wait) { img_wait--; break; }
-		if (img_i < 512 + 4) {
-			if (img_i >= 4) { size_t a = (size_t)img_lba * 512 + img_i - 4; if (a < img.size()) img[a] = top->hd_byte_out_data; }
-			top->hd_byte_addr = img_i < 512 ? img_i : 511;
+		if (img_i < 512 * 4) {
+			int b = img_i >> 2;
+			top->sdc_byte_addr = b;
+			if ((img_i & 3) == 3) { size_t a = (size_t)img_lba * 512 + b; if (a < f.size()) f[a] = top->sdc_byte_out_data; }
 			img_i++;
-		} else img_state = 2, img_writes++, img_reads--;
+		} else { img_state = 2; img_writes++; }
 		break;
 	}
 }
@@ -205,16 +221,32 @@ int main(int argc, char **argv) {
 	Verilated::commandArgs(argc, argv);
 	crc_init();
 	if (argc < 2) { fprintf(stderr, "usage: %s game.uze [-n frames] [-p png] [-e n] [-k f:n:key]\n", argv[0]); return 2; }
-	int max_frames = 10, key_at = -1, key_n = 0, key = 0;
+	int max_frames = 10;
+	std::vector<int> k_at, k_n, k_key;      // -k frame:frames:usb_key, may repeat
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "-n") && i + 1 < argc) max_frames = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-p") && i + 1 < argc) png_prefix = argv[++i];
 		else if (!strcmp(argv[i], "-e") && i + 1 < argc) png_every = atoi(argv[++i]);
-		else if (!strcmp(argv[i], "-k") && i + 1 < argc) sscanf(argv[++i], "%d:%d:%x", &key_at, &key_n, &key);
+		else if (!strcmp(argv[i], "-k") && i + 1 < argc) {
+			int a = 0, n = 0, k = 0; sscanf(argv[++i], "%d:%d:%x", &a, &n, &k);
+			k_at.push_back(a); k_n.push_back(n); k_key.push_back(k);
+		}
 		else if (!strcmp(argv[i], "-i") && i + 1 < argc) {
 			FILE *fi = fopen(argv[++i], "rb");
 			if (!fi) { fprintf(stderr, "cannot open %s\n", argv[i]); return 2; }
-			int ch; while ((ch = fgetc(fi)) != EOF) img.push_back(ch);
+			int ch; while ((ch = fgetc(fi)) != EOF) files[1].push_back(ch);
+			fclose(fi);
+		} else if (!strcmp(argv[i], "-b") && i + 1 < argc) {      // the Bootloader5 ROM (raw load at 0xF000)
+			FILE *fi = fopen(argv[++i], "rb");
+			if (!fi) { fprintf(stderr, "cannot open %s\n", argv[i]); return 2; }
+			int ch; while ((ch = fgetc(fi)) != EOF) rom.push_back(ch);
+			fclose(fi);
+		} else if (!strcmp(argv[i], "-L")) boot_loader = 1;      // Boot = Loader
+		else if (!strcmp(argv[i], "-E") && i + 1 < argc) sav_out = argv[++i];   // the EEPROM file at the end
+		else if (!strcmp(argv[i], "-s") && i + 1 < argc) {        // the EEPROM file to start with
+			FILE *fi = fopen(argv[++i], "rb");
+			if (!fi) { fprintf(stderr, "cannot open %s\n", argv[i]); return 2; }
+			int ch; while ((ch = fgetc(fi)) != EOF) files[2].push_back(ch);
 			fclose(fi);
 		}
 	}
@@ -228,12 +260,20 @@ int main(int argc, char **argv) {
 
 	top = new Vuzebox;
 	top->areset = 1; top->areset_sdr = 1; top->reset = 0; top->joy_l = 0; top->joy_r = 0; top->kbd = 0;
-	top->sd_image = img.empty() ? 0 : 1; top->sd_miso = 1;   // the image if one is given, else no card (MISO high)
+	top->sd_image = files[1].empty() ? 0 : 1; top->boot = boot_loader; top->img_flush = 0; top->sd_miso = 1;   // the image if one is given, else no card (MISO high)
 	top->clk = 0; top->clk_sdr = 0; top->clk_vid = 0;
 	for (int i = 0; i < 8; i++) cpu_cycle();
 	top->areset = 0; top->areset_sdr = 0;
 	for (int i = 0; i < 100; i++) cpu_cycle();
 
+	if (!rom.empty()) {                       // the ROM of the .kg first (raw, at 0xF000), as the MCU does
+		top->ld_raw = 1; top->ld_start = 1; top->ld_active = 1; cpu_cycle(); top->ld_start = 0;
+		for (size_t i = 0; i < rom.size(); i++) {
+			top->ld_addr = 0xF000 + i; top->ld_data = rom[i]; top->ld_wr = 1; cpu_cycle(); top->ld_wr = 0;
+			for (int k = 0; k < 7; k++) cpu_cycle();
+		}
+		top->ld_end = 1; top->ld_active = 0; cpu_cycle(); top->ld_end = 0; top->ld_raw = 0;
+	}
 	top->ld_start = 1; top->ld_active = 1; cpu_cycle(); top->ld_start = 0;
 	for (size_t i = 0; i < uze.size(); i++) {
 		top->ld_addr = i; top->ld_data = uze[i]; top->ld_wr = 1; cpu_cycle(); top->ld_wr = 0;
@@ -247,13 +287,35 @@ int main(int argc, char **argv) {
 		if (b != uze[i]) mism++;
 	}
 	printf("loaded %zu bytes, %d wrong in the SRAM\n", uze.size() - 512, mism);
+	if (!rom.empty()) printf("ROM: sram[0x7800] %04x (rom %02x%02x)\n", sram[0x7800], rom[1], rom[0]);
+	if (getenv("PCDBG")) {
+		int n = 0;
+		while (!top->running && n < 2000000) { cpu_cycle(); n++; }
+		printf("CPU runs after %d clocks, pc", n);
+		for (int i = 0; i < 16; i++) { printf(" %04x", top->dbg_pc); cpu_cycle(); }
+		printf("\n");
+		// the first jump out of the boot section (0x7800..) while the CPU runs
+		int prev = top->dbg_pc, prun = top->running;
+		for (int i = 0; i < 3000000; i++) {
+			cpu_cycle();
+			int pc = top->dbg_pc, run = top->running;
+			if (run != prun) printf("cycle %llu: running %d (pc %04x)\n", (unsigned long long)cyc, run, pc);
+			if (run && prun && prev >= 0x7800 && pc < 0x7800) {
+				printf("cycle %llu: pc %04x -> %04x, SREG I %d\n", (unsigned long long)cyc, prev, pc,
+				       (int)(top->rootp->uzebox__DOT__mcu__DOT__cpu__DOT__sreg >> 7) & 1);
+				break;
+			}
+			prev = pc; prun = run;
+		}
+	}
 
 	while (out_frames < max_frames) {
-		if (key_at >= 0) {
-			bool on = ref_frames >= key_at && ref_frames < key_at + key_n;
-			top->kbd = on ? ((uint64_t)key << 8) : 0;
-		}
+		uint64_t kb = 0;
+		for (size_t q = 0; q < k_at.size(); q++)
+			if (ref_frames >= k_at[q] && ref_frames < k_at[q] + k_n[q]) kb = (uint64_t)k_key[q] << 8;
+		top->kbd = kb;
 		cpu_cycle();
+		if (getenv("PCDBG") && top->running && (cyc % 200000) == 0) printf("cycle %llu: pc %04x, game frame %d, kbd %llx%c", (unsigned long long)cyc, top->dbg_pc, ref_frames, (unsigned long long)top->kbd, 10);
 	}
 	printf("audio: %llu changes\n", (unsigned long long)snd_changes);
 	printf("PB0 rise intervals (cycles: count):");
@@ -261,7 +323,8 @@ int main(int argc, char **argv) {
 	printf("%c", 10);
 	printf("game draws: cycles %d..%d after the line start (window 168..1607), rows %d..%d (window 0..223)%c", ext_x0, ext_x1, ext_y0, ext_y1, 10);
 	{ auto *R = top->rootp; printf("io: SPCR %02x SPSR %02x SPDR %02x DDRA %02x PORTA %02x DDRD %02x PORTD %02x UCSR0B %02x%c", R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2C], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2D], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2E], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x01], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x02], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0A], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0B], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0xA1], 10); }
-	printf("SD image: %d sectors read, %d written%c", img_reads, img_writes, 10);
+	printf("file mounter: %d sectors read, %d written, EEPROM file mounted %d times%c", img_reads, img_writes, bk_mounts, 10);
+	if (sav_out) { FILE *fo = fopen(sav_out, "wb"); if (fo) { fwrite(files[2].data(), 1, files[2].size(), fo); fclose(fo); } }
 	printf("SPI RAM: a byte late: %d%c", (int)top->rootp->uzebox__DOT__spiram__DOT__late_r, 10);
 	printf("game frames %d, output frames %d, with a picture %d\n", ref_frames, out_frames, shown);
 	printf("%s: %d frames checked, %d differ\n", bad || !checked ? "FAIL" : "OK", checked, bad);
