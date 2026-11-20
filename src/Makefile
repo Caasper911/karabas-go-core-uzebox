@@ -6,7 +6,7 @@
 #
 # Inputs per board: karabas_<board>.prj (the shared modules as "../modules/rtl/...", rtl/), .xst, .ut, .ucf.
 PART = xc6slx25-ftg256-2
-BOARDS = minig
+BOARDS = minig mini go
 SHELL = /bin/bash
 .SHELLFLAGS = -e -o pipefail -c
 .NOTPARALLEL:

@@ -223,14 +223,10 @@ NET "FLASH_WP_N"       LOC="N12"    | IOSTANDARD = LVCMOS33; # CONF_IO2
 NET "FLASH_HOLD_N"     LOC="P12"    | IOSTANDARD = LVCMOS33; # CONF_IO3
 
 # ------------------------------------------------------------------------------------------------------------
-# Timing constraints (karabas_minig_top.v): one PLL, VCO 750 MHz (50 * 15):
-#   pll_clk<0> 75 MHz (/10) -> clk_sys: the CPU, the SDRAM and SRAM controllers, MMIO, the MCU link
-#   pll_clk<1> 75 MHz (/10, 225 degrees) -> clk_sdr: SDR_CLK only (an ODDR2), as core-archie
-#   pll_clk<2> 25 MHz (/30) -> clk_pix: 640 x 480 at 60 Hz, the OSD, HDMI
-#   pll_clk<3> / <4> 125 MHz (/6, 0 / 180 degrees) -> clk_hdmi / clk_hdmi_n: the TMDS serialiser
-#   pll_clk<5> 34.09 MHz (/22) -> clk_ez: the eZ80 machine (agon_ez80, agon_sram), FT_CLK_OUT / 4
-# The PERIOD of CLK_50MHZ is derived onto the PLL outputs; clk_sys and clk_pix are related (one PLL).
-# The paths between them: the line buffers / palette (BRAM, two clocks) and the synchronised toggles.
+# Timing constraints (karabas_minig_top.v; tools/mktops.py copies this part into the Mini / Go ucf):
+#   PLL 1 (VCO 575 MHz): pll_clk<0> 28.75 MHz clk_cpu (the ATmega644, the MCU link), pll_clk<1> 71.875 MHz clk_sdr
+#   (the SDRAM: frame buffer, SPI RAM), pll_clk<2> its 225 degree copy (SDR_CLK, an ODDR2), pll_clk<3> 25 MHz -> PLL 2
+#   (VCO 675 MHz): vpll_clk<0> 27 MHz clk_vid (720 x 480p, the OSD, HDMI / VGA), vpll_clk<1> / <2> 135 MHz HDMI.
 # ------------------------------------------------------------------------------------------------------------
 # ---------------------------------------------------------------- timing (karabas-go-core-uzebox)
 NET "CLK_50MHZ" TNM_NET = "CLK_50MHZ";

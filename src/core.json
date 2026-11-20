@@ -1,7 +1,7 @@
 {
     "id": "uzebox",
     "name": "Uzebox",
-    "build": "26112020",
+    "build": "26112021",
     "visible": true,
     "type": "osd",
     "order": 41,
@@ -14,9 +14,19 @@
         }
     ],
     "boards": {
+        "go": {
+            "link": 2,
+            "build": "26112021",
+            "bitstream": "karabas_go.bin"
+        },
+        "mini": {
+            "link": 2,
+            "build": "26112021",
+            "bitstream": "karabas_mini.bin"
+        },
         "minig": {
             "link": 2,
-            "build": "26112020",
+            "build": "26112021",
             "bitstream": "karabas_minig.bin"
         }
     },
