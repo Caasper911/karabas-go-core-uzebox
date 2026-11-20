@@ -7,6 +7,7 @@
 // of an output frame R = C. So a frame is never shown while it is written (no tearing); the game runs at
 // 60.29 Hz, the output at 59.94 Hz: about every 3 s one game frame is not shown.
 //
+// The SPI RAM of the console (uze_spiram) lives at byte 0x100000 (128 KB), its single accesses go first.
 // clk_sdr (71.875 MHz, uze_sdram, wishbone): the writer copies a picture line from the ring of
 // uze_video (rd_*, 4 bytes into one 32-bit write) when line_tg toggles; the reader fills a line buffer
 // (2 rows x 256 words) with 23 bursts of 8 words for a row the output asks for. The reader has priority.
@@ -27,11 +28,20 @@ module uze_fb (
 	output     [11:0] rd_addr,
 	input      [7:0]  rd_data,
 
+	// the SPI RAM (uze_spiram, CPU clock): a request per toggle, single accesses at byte 0x100000 +
+	input             sr_req_tg,
+	input             sr_we,
+	input      [14:0] sr_word,
+	input      [1:0]  sr_lane,
+	input      [7:0]  sr_byte,
+	output reg        sr_ack_tg,
+	output reg [31:0] sr_rdata,
+
 	// wishbone master to uze_sdram
 	output reg        wb_cyc,
 	output reg        wb_stb,
 	output reg        wb_we,
-	output     [3:0]  wb_sel,
+	output reg [3:0]  wb_sel,
 	output reg [24:2] wb_adr,
 	output reg [2:0]  wb_cti,
 	output reg [31:0] wb_dat_o,
@@ -46,7 +56,6 @@ module uze_fb (
 	output reg        de
 );
 
-assign wb_sel = 4'b1111;
 
 // ---------------------------------------------------------------- video timing (clk_vid)
 localparam H_TOTAL = 858, H_ACT = 720, HS_B = 736, HS_E = 798;
@@ -72,8 +81,10 @@ always @(posedge clk_vid) begin
 end
 
 // ---------------------------------------------------------------- SDRAM side (clk_sdr)
-reg [2:0] ltg_s = 3'd0, vfs_s = 3'd0, rq_s = 3'd0;
+reg [2:0] ltg_s = 3'd0, vfs_s = 3'd0, rq_s = 3'd0, sr_s = 3'd0;
+initial begin sr_ack_tg = 1'b0; sr_rdata = 32'd0; end
 always @(posedge clk_sdr) begin
+	sr_s <= {sr_s[1:0], sr_req_tg};
 	ltg_s <= {ltg_s[1:0], line_tg};
 	vfs_s <= {vfs_s[1:0], vfs_tg};
 	rq_s <= {rq_s[1:0], rq_tg};
@@ -81,6 +92,8 @@ end
 wire line_ev = ltg_s[2] ^ ltg_s[1];
 wire vfs_ev = vfs_s[2] ^ vfs_s[1];
 wire rq_ev = rq_s[2] ^ rq_s[1];
+wire sr_ev = sr_s[2] ^ sr_s[1];
+reg  sr_pend = 1'b0;
 
 // triple buffer
 reg [1:0] fw = 2'd0, fc = 2'd1, fr = 2'd2;
@@ -120,10 +133,11 @@ always @(posedge clk_sdr) begin
 	lb_we <= 1'b0;
 	if (rst_sdr) begin
 		w_pend <= 1'b0; w_busy <= 1'b0; w_full <= 1'b0; r_pend <= 1'b0; r_busy <= 1'b0; own <= 2'd0;
-		wb_cyc <= 1'b0; wb_stb <= 1'b0; fw <= 2'd0; fc <= 2'd1; fr <= 2'd2; c_valid <= 1'b0; r_valid <= 1'b0;
+		wb_cyc <= 1'b0; wb_stb <= 1'b0; sr_pend <= 1'b0; fw <= 2'd0; fc <= 2'd1; fr <= 2'd2; c_valid <= 1'b0; r_valid <= 1'b0;
 	end else begin
 		if (line_ev) begin w_pend <= 1'b1; w_bank <= line_bank; w_row <= line_row; end
 		if (rq_ev) begin r_pend <= 1'b1; r_row <= rq_row; end
+		if (sr_ev) sr_pend <= 1'b1;
 		if (vfs_ev) begin fr <= fc; r_valid <= c_valid; end
 
 		// ---- writer: bytes from the ring into w_word (ring read latency 1)
@@ -145,14 +159,20 @@ always @(posedge clk_sdr) begin
 		// ---- bus
 		case (own)
 			2'd0: if (sdr_ready) begin
-				if (r_pend || r_busy) begin
+				if (sr_pend) begin
+					own <= 2'd3; sr_pend <= 1'b0;
+					wb_cyc <= 1'b1; wb_stb <= 1'b1; wb_we <= sr_we; wb_cti <= 3'b111;
+					wb_adr <= {4'd0, 1'b1, 3'd0, sr_word};             // byte 0x100000 + 4 * word
+					wb_sel <= sr_we ? (4'b0001 << sr_lane) : 4'b1111;
+					wb_dat_o <= {4{sr_byte}};
+				end else if (r_pend || r_busy) begin
 					if (!r_busy) begin r_busy <= 1'b1; r_pend <= 1'b0; r_burst <= 5'd0; end
 					own <= 2'd1; r_word <= 3'd0;
-					wb_cyc <= 1'b1; wb_stb <= 1'b1; wb_we <= 1'b0; wb_cti <= 3'b010;
+					wb_cyc <= 1'b1; wb_stb <= 1'b1; wb_we <= 1'b0; wb_cti <= 3'b010; wb_sel <= 4'b1111;
 					wb_adr <= {5'd0, fr, r_row, r_busy ? r_burst : 5'd0, 3'd0};
 				end else if (w_full) begin
 					own <= 2'd2;
-					wb_cyc <= 1'b1; wb_stb <= 1'b1; wb_we <= 1'b1; wb_cti <= 3'b111;
+					wb_cyc <= 1'b1; wb_stb <= 1'b1; wb_we <= 1'b1; wb_cti <= 3'b111; wb_sel <= 4'b1111;
 					wb_adr <= {5'd0, fw, w_row, w_wx[9:2]};
 					wb_dat_o <= w_word;
 				end
@@ -165,6 +185,10 @@ always @(posedge clk_sdr) begin
 					r_burst <= r_burst + 5'd1;
 					if (r_burst == 5'd22) r_busy <= 1'b0;
 				end
+			end
+			2'd3: if (wb_ack) begin
+				wb_cyc <= 1'b0; wb_stb <= 1'b0; own <= 2'd0;
+				sr_rdata <= wb_dat_i; sr_ack_tg <= ~sr_ack_tg;
 			end
 			default: if (wb_ack) begin
 				wb_cyc <= 1'b0; wb_stb <= 1'b0; own <= 2'd0; w_full <= 1'b0;

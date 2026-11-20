@@ -45,7 +45,18 @@ module avr_io_m644 (
 	output reg [7:0]  ddrd,
 
 	output reg [7:0]  ocr2a,
-	output            sample        // OCR2A written while timer 2 runs
+	output            sample,       // OCR2A written while timer 2 runs
+
+	// SPI master (mode 0, MSB first): the pins (a real SD card) and a byte port for emulated devices
+	input             spi_on,       // 0: no transfers, SPDR / SPSR / SPCR read back (Uzem without an SD card)
+	output reg        spi_sck,
+	output reg        spi_mosi,
+	input             spi_miso,
+	output            spi_start,    // one clock: a transfer of spi_tx starts (an SPDR write)
+	output     [7:0]  spi_tx,
+	output            spi_done,     // one clock: the transfer ends, SPDR takes the received byte
+	input             spi_ext,      // at spi_done: take spi_rx_ext (an emulated device) instead of MISO
+	input      [7:0]  spi_rx_ext
 );
 
 localparam A_PINA = 8'h00, A_DDRA = 8'h01, A_PORTA = 8'h02, A_PINB = 8'h03, A_DDRB = 8'h04, A_PORTB = 8'h05,
@@ -53,7 +64,7 @@ localparam A_PINA = 8'h00, A_DDRA = 8'h01, A_PORTA = 8'h02, A_PINB = 8'h03, A_DD
            A_TIFR1 = 8'h16, A_EECR = 8'h1F, A_EEDR = 8'h20, A_EEARL = 8'h21, A_EEARH = 8'h22,
            A_WDTCSR = 8'h40, A_TIMSK1 = 8'h4F, A_TCCR1B = 8'h61, A_TCNT1L = 8'h64, A_TCNT1H = 8'h65,
            A_OCR1AL = 8'h68, A_OCR1AH = 8'h69, A_OCR1BL = 8'h6A, A_OCR1BH = 8'h6B,
-           A_TCCR2B = 8'h91, A_OCR2A = 8'h93;
+           A_TCCR2B = 8'h91, A_OCR2A = 8'h93, A_SPCR = 8'h2C, A_SPSR = 8'h2D, A_SPDR = 8'h2E;
 localparam WDT_CYCLES = 20'd457142;
 
 wire wr = io_wr;
@@ -228,6 +239,60 @@ always @(posedge clk) begin
 end
 assign sample = wr && io_addr == A_OCR2A && tccr2b != 8'd0;
 
+// ---------------------------------------------------------------- SPI master
+// A transfer takes 8 x div clocks, div = 4 / 16 / 64 / 128 by SPR1:0, halved by SPI2X (the kernel's SD and SPI RAM
+// code at fosc / 2 reads SPDR a fixed 17 clocks after its write: the byte is there after 16). SPIF is cleared by
+// reading SPSR with SPIF set and then accessing SPDR (datasheet); a write during a transfer sets WCOL and is lost.
+reg  [7:0] spcr /* verilator public_flat */ = 8'd0;
+reg  [7:0] spsr /* verilator public_flat */ = 8'd0;
+reg  [7:0] spdr_rx = 8'd0;
+reg  [7:0] spi_sh = 8'd0;        // out: the bits still to send; in: the bits received
+reg  [7:0] spi_txr = 8'd0;
+reg        spi_busy = 1'b0;
+reg  [10:0] spi_cnt = 11'd0;     // clocks of the transfer
+reg  [6:0] spi_hc = 7'd0;        // clocks of the half bit
+reg        spif_arm = 1'b0;
+reg        spi_done_r = 1'b0;
+wire [7:0] spi_div = (spcr[1:0] == 2'd0 ? 8'd4 : spcr[1:0] == 2'd1 ? 8'd16 : spcr[1:0] == 2'd2 ? 8'd64 : 8'd128) >> spsr[0];
+wire [6:0] spi_half = spi_div[7:1];
+wire       spdr_wr = wr && io_addr == A_SPDR;
+wire       spdr_acc = (wr || io_rd) && io_addr == A_SPDR;
+wire       spi_go = spdr_wr && spi_on && spcr[6] && !spi_busy;
+assign spi_start = spi_go;
+assign spi_tx = io_wdata;
+assign spi_done = spi_done_r;
+initial begin spi_sck = 1'b0; spi_mosi = 1'b1; end
+always @(posedge clk) begin
+	spi_done_r <= 1'b0;
+	if (rst) begin
+		spcr <= 8'd0; spsr <= 8'd0; spi_busy <= 1'b0; spi_sck <= 1'b0; spi_mosi <= 1'b1; spif_arm <= 1'b0;
+	end else begin
+		if (wr && io_addr == A_SPCR) spcr <= io_wdata;
+		if (wr && io_addr == A_SPSR) spsr <= spi_on ? {spsr[7:1], io_wdata[0]} : io_wdata;
+		if (io_rd && io_addr == A_SPSR && spsr[7]) spif_arm <= 1'b1;
+		if (spdr_acc && spif_arm) begin spsr[7:6] <= 2'b00; spif_arm <= 1'b0; end
+		if (!spi_on && spdr_wr) spdr_rx <= io_wdata;
+		if (spdr_wr && spi_on && spi_busy) spsr[6] <= 1'b1;            // WCOL
+		if (spi_go) begin
+			spi_busy <= 1'b1; spi_cnt <= 11'd0; spi_hc <= 7'd0; spi_sh <= io_wdata; spi_txr <= io_wdata;
+			spi_mosi <= io_wdata[7]; spi_sck <= 1'b0;
+		end else if (spi_busy) begin
+			spi_cnt <= spi_cnt + 11'd1;
+			if (spi_hc == spi_half - 7'd1) begin
+				spi_hc <= 7'd0;
+				spi_sck <= ~spi_sck;
+				if (!spi_sck) spi_sh <= {spi_sh[6:0], spi_miso};       // rising edge: a bit in
+				else spi_mosi <= spi_sh[7];                             // falling edge: the next bit out
+			end else spi_hc <= spi_hc + 7'd1;
+			if (spi_cnt == {spi_div, 3'd0} - 11'd1) begin
+				spi_busy <= 1'b0; spi_sck <= 1'b0; spi_done_r <= 1'b1;
+				spsr[7] <= 1'b1;
+				spdr_rx <= spi_ext ? spi_rx_ext : spi_sh;
+			end
+		end
+	end
+end
+
 // ---------------------------------------------------------------- read
 always @* begin
 	case (io_addr)
@@ -258,6 +323,9 @@ always @* begin
 		A_EEARL:  io_rdata = eear[7:0];
 		A_EEARH:  io_rdata = {5'd0, eear[10:8]};
 		A_OCR2A:  io_rdata = ocr2a;
+		A_SPCR:   io_rdata = spcr;
+		A_SPSR:   io_rdata = spsr;
+		A_SPDR:   io_rdata = spdr_rx;
 		default:  io_rdata = gen_q;
 	endcase
 end
