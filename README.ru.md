@@ -9,6 +9,28 @@ SD-карта или образ SD через файловый монтиров�
 Пока программа ждёт сектор образа SD, консоль стоит (картинка держится, звук на паузе): MCU отдаёт сектор
 за несколько мс. См. [docs/PLAN.md](docs/PLAN.md). [English](README.md).
 
+## Uzebox: сайты и программы
+
+- [uzebox.org](https://uzebox.org/) — сайт консоли, её [вики](https://uzebox.org/wiki/Main_Page) и
+  [форум](https://uzebox.org/forums/) (там объявляют новые игры и утилиты).
+- Игры (`.uze`):
+  - [Games and Demos](https://uzebox.org/wiki/Games_and_Demos) — текущий список, у каждой игры своя страница и
+    ссылка на скачивание;
+  - [Latest Rom List](https://uzebox.org/wiki/Latest_Rom_List) — один zip с играми, известными Uzebox Online Player;
+  - [Games and Demos EX](https://uzebox.org/wiki/Games_and_Demos_EX) — старый список и Uzebox ROM Pack 1.0
+    (`.hex` и `.uze`, устарел).
+- Исходники: [Uzebox/uzebox](https://github.com/Uzebox/uzebox) на GitHub (kernel, демо и игры с исходниками,
+  Bootloader5, утилиты `packrom` / `gconvert` / `mconvert`, схемы); [релизы](https://github.com/Uzebox/uzebox/releases)
+  (сборки Uzem). В этом репозитории — в `upstream/uzebox`.
+- Эмуляторы, чтобы попробовать игру на ПК: Uzem (в [Uzebox/uzebox](https://github.com/Uzebox/uzebox), `tools/uzem`),
+  [CUzebox](https://github.com/Jubatian/cuzebox) ([страница в вики](https://uzebox.org/wiki/CUzebox)) и его
+  ответвление с большей SPI RAM, ESP8266 и UART — [cuzebox-ex](https://github.com/weber21w/cuzebox-ex).
+
+На плате: положите файлы `.uze` в `/uzebox` на SD-карте и выберите игру в OSD (Game) или включите в OSD
+Bootloader5 и выберите игру в нём. Файлы, которые игра читает (данные, музыка, `.sav`), кладутся рядом с ней.
+
+## Репозиторий
+
 Клонировать с сабмодулями: `git clone --recursive` или `git submodule update --init` после клонирования.
 
 - `modules/` — общие модули плат Karabas Go (karabas-go-modules).

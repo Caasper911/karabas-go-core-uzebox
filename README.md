@@ -8,6 +8,27 @@ pad 1, the USB mouse as the SNES mouse, the ESP8266 on USART0 (Uzenet, not check
 or an SD image through the file mounter of the MCU, Bootloader5, EEPROM saved to a `.sav` file). While a program waits for a sector of the SD image, the console is frozen (picture held, sound paused), as
 the MCU serves a sector in a few ms. See [docs/PLAN.md](docs/PLAN.md) (in Russian). [Русская версия](README.ru.md).
 
+## Uzebox: sites and software
+
+- [uzebox.org](https://uzebox.org/): the home of the console, its [wiki](https://uzebox.org/wiki/Main_Page) and
+  [forums](https://uzebox.org/forums/) (new games and tools are announced there).
+- Games (`.uze`):
+  - [Games and Demos](https://uzebox.org/wiki/Games_and_Demos): the current list, each game with its page and download;
+  - [Latest Rom List](https://uzebox.org/wiki/Latest_Rom_List): one zip with the games known to the Uzebox Online Player;
+  - [Games and Demos EX](https://uzebox.org/wiki/Games_and_Demos_EX): the older list with the Uzebox ROM Pack 1.0
+    (`.hex` and `.uze`, outdated).
+- Sources: [Uzebox/uzebox](https://github.com/Uzebox/uzebox) on GitHub (the kernel, the demos and games with
+  their sources, Bootloader5, the tools `packrom` / `gconvert` / `mconvert`, the schematics);
+  [releases](https://github.com/Uzebox/uzebox/releases) (Uzem builds). This repository has it in `upstream/uzebox`.
+- Emulators to try a game on a PC: Uzem (in [Uzebox/uzebox](https://github.com/Uzebox/uzebox), `tools/uzem`),
+  [CUzebox](https://github.com/Jubatian/cuzebox) ([wiki page](https://uzebox.org/wiki/CUzebox)) and its fork with
+  more SPI RAM, the ESP8266 and the UART, [cuzebox-ex](https://github.com/weber21w/cuzebox-ex).
+
+On the board: put the `.uze` files in `/uzebox` on the SD card and pick one in the OSD (Game), or turn on
+Bootloader5 in the OSD and choose the game in it. The files a game reads (data, music, `.sav`) go next to it.
+
+## Repository
+
 Clone with submodules: `git clone --recursive`, or `git submodule update --init` after a clone.
 
 - `modules/` — shared Karabas Go board modules (karabas-go-modules).
