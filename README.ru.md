@@ -4,7 +4,7 @@
 Karabas Go, Mini и Mini G (Xilinx Spartan-6 XC6SLX25).
 
 Состояние: работает на Mini G, Mini и Go (720x480p из кадрового буфера: HDMI, на Go — VGA; звук, пады SNES, USB-клавиатура как клавиатура Uzebox
-или пад 1, USB-мышь как мышь SNES, ESP8266 на USART0 (Uzenet), SPI RAM (8 МБ или 128 КБ),
+или пад 1, USB-мышь как мышь SNES, ESP8266 на USART0 (Uzenet, ещё не проверен), SPI RAM (8 МБ или 128 КБ),
 SD-карта или образ SD через файловый монтировщик MCU, Bootloader5, EEPROM в файле `.sav`).
 Пока программа ждёт сектор образа SD, консоль стоит (картинка держится, звук на паузе): MCU отдаёт сектор
 за несколько мс. См. [docs/PLAN.md](docs/PLAN.md). [English](README.md).
