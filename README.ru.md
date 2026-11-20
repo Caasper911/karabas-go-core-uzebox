@@ -3,7 +3,8 @@
 В работе: порт ретро-консоли [Uzebox](https://github.com/Uzebox/uzebox) (ATmega644 на 28.636 МГц) на платы
 Karabas Go, Mini и Mini G (Xilinx Spartan-6 XC6SLX25).
 
-Состояние: играбельно на Mini G (720x480p по HDMI из кадрового буфера, звук, пады SNES / клавиатура, SPI RAM,
+Состояние: играбельно на Mini G (720x480p по HDMI из кадрового буфера, звук, пады SNES, USB-клавиатура как клавиатура Uzebox
+или пад 1, USB-мышь как мышь SNES, ESP8266 на USART0 (Uzenet), SPI RAM (8 МБ или 128 КБ),
 SD-карта или образ SD через файловый монтировщик MCU, Bootloader5, EEPROM в файле `.sav`); дальше Go и Mini.
 Пока программа ждёт сектор образа SD, консоль стоит (картинка держится, звук на паузе): MCU отдаёт сектор
 за несколько мс. См. [docs/PLAN.md](docs/PLAN.md). [English](README.md).

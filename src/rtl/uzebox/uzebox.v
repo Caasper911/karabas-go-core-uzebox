@@ -31,6 +31,18 @@ module uzebox #(
 	input      [15:0] joy_l,
 	input      [15:0] joy_r,
 	input      [55:0] kbd,
+	input      [1:0]  kb_mode,        // OSD Keyboard: 0 Auto, 1 Pad, 2 PS/2 (uze_pads)
+	input      [7:0]  ps2_code,       // PS/2 set 2 bytes of the USB keyboard
+	input             ps2_wr,
+	input             spiram_big,     // OSD SPI RAM: 1 8 MB (PSRAM), 0 128 KB (23LC1024)
+	input      [1:0]  ms_port,        // OSD Mouse: 0 Off, 1 port 1, 2 port 2 (SNES mouse, uze_pads)
+	input      [7:0]  ms_x,           // the USB mouse of the MCU
+	input      [7:0]  ms_y,
+	input      [7:0]  ms_b,
+	input             ms_wr,
+	input             uart_rxd,       // USART0: the ESP8266 (Uzenet)
+	output            uart_txd,
+	output            uart_cts,
 
 	output     [20:0] sram_a,
 	input      [15:0] sram_dq_i,
@@ -108,7 +120,7 @@ end
 
 // SPI RAM <-> SDRAM (uze_spiram <-> uze_fb)
 wire        sr_req_tg, sr_we, sr_ack_tg;
-wire [14:0] sr_word;
+wire [20:0] sr_word;
 wire [1:0]  sr_lane;
 wire [7:0]  sr_byte;
 wire [31:0] sr_rdata;
@@ -163,6 +175,7 @@ atmega644 mcu (
 	.spm_busy(spm_busy), .freeze(sd_freeze),
 	.ee_req(ee_req), .ee_we(ee_we), .ee_addr(ee_addr[10:0]), .ee_din(ee_din), .ee_ack(ee_ack), .ee_dout(ee_dout),
 	.ee_cpu_wr(ee_cpu_wr), .ee_cpu_addr(ee_cpu_addr), .wdt_reset(wdt_reset),
+	.uart_rxd(uart_rxd), .uart_txd(uart_txd), .uart_cts(uart_cts),
 	.insn_start(), .dbg_pc(dbg_pc)
 );
 
@@ -178,7 +191,9 @@ uze_pm_sram pm (
 	.sram_we_n(sram_we_n), .sram_oe_n(sram_oe_n)
 );
 
-uze_pads pads (.clk(clk), .porta(porta), .joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .data(pad_data));
+uze_pads pads (.clk(clk), .porta(porta), .joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .rst(cpu_rst), .kb_mode(kb_mode),
+	.ps2_code(ps2_code), .ps2_wr(ps2_wr), .kb_on(),
+	.ms_port(ms_port), .ms_x(ms_x), .ms_y(ms_y), .ms_b(ms_b), .ms_wr(ms_wr), .data(pad_data));
 
 wire        line_tg;
 wire [1:0]  line_bank;
@@ -240,7 +255,7 @@ assign sd_sck = spi_sck;
 assign sd_mosi = spi_mosi;
 
 uze_spiram spiram (
-	.clk(clk), .rst(areset), .cs_n(cs_ram_n), .spi_start(spi_start), .spi_tx(spi_tx), .spi_done(spi_done),
+	.clk(clk), .rst(areset), .big(spiram_big), .cs_n(cs_ram_n), .spi_start(spi_start), .spi_tx(spi_tx), .spi_done(spi_done),
 	.rx(ram_rx), .late(),
 	.m_req_tg(sr_req_tg), .m_we(sr_we), .m_word(sr_word), .m_lane(sr_lane), .m_byte(sr_byte),
 	.m_ack_tg(sr_ack_tg), .m_rdata(sr_rdata)

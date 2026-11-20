@@ -1,12 +1,11 @@
 {
     "id": "uzebox",
     "name": "Uzebox",
-    "build": "26112016",
+    "build": "26112020",
     "visible": true,
     "type": "osd",
     "order": 41,
     "eeprom_bank": 255,
-    "spi_freq": 32,
     "rtc_mode": 0,
     "roms": [
         {
@@ -17,7 +16,7 @@
     "boards": {
         "minig": {
             "link": 2,
-            "build": "26112016",
+            "build": "26112020",
             "bitstream": "karabas_minig.bin"
         }
     },
@@ -63,6 +62,35 @@
             "options": [
                 "Off",
                 "On"
+            ],
+            "default": 0
+        },
+        {
+            "type": "S",
+            "name": "Keyboard",
+            "options": [
+                "Auto",
+                "Pad",
+                "PS/2"
+            ],
+            "default": 0
+        },
+        {
+            "type": "S",
+            "name": "Mouse",
+            "options": [
+                "Port 2",
+                "Port 1",
+                "Off"
+            ],
+            "default": 0
+        },
+        {
+            "type": "S",
+            "name": "SPI RAM",
+            "options": [
+                "8 MB",
+                "128 KB"
             ],
             "default": 0
         }
