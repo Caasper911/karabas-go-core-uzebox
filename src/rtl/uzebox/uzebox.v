@@ -88,8 +88,23 @@ module uzebox #(
 
 // SD image (kg_sd_emu) <-> the file mounter
 wire hd_rd, hd_wr;
-wire [31:0] hd_lba, hd_rq_lba;
+wire [31:0] hd_lba /* verilator public_flat */;
+wire [31:0] hd_rq_lba;
 wire [7:0] hd_byte_out;
+
+// SD image wait: while the card waits for a sector of the file mounter (or the end of a write), the whole ATmega
+// and the video input stop (the MCU serves a sector in ~5 ms, slower than a card: streaming programs read
+// garbage / time out, SD error 03). The game sees no time pass; the picture holds, the sound pauses. If the
+// mounter does not answer in ~1.2 s the chip runs on (the program times out as without the wait).
+wire        sd_waiting;
+reg         sd_freeze /* verilator public_flat */ = 1'b0;
+reg  [24:0] sd_wait_cnt = 25'd0;
+reg         sd_wait_to = 1'b0;
+always @(posedge clk) begin
+	if (!sd_waiting) begin sd_wait_cnt <= 25'd0; sd_wait_to <= 1'b0; end
+	else if (!sd_wait_to) begin sd_wait_cnt <= sd_wait_cnt + 25'd1; if (&sd_wait_cnt) sd_wait_to <= 1'b1; end
+	sd_freeze <= sd_waiting && !sd_wait_to && !(&sd_wait_cnt);
+end
 
 // SPI RAM <-> SDRAM (uze_spiram <-> uze_fb)
 wire        sr_req_tg, sr_we, sr_ack_tg;
@@ -124,7 +139,8 @@ wire [7:0]  ddra, ddrb, portd, ddrd, ocr2a;   // (PORTA / PORTD are used by the 
 wire [7:0]  pixel /* verilator public_flat */, portb /* verilator public_flat */;
 wire [1:0]  pad_data /* verilator public_flat */;
 wire        sample;
-wire        spi_sck, spi_mosi, spi_start, spi_done;
+wire        spi_sck, spi_mosi, spi_start;
+wire        spi_done /* verilator public_flat */;
 wire [7:0]  spi_tx;
 wire        spi_ext;
 wire [7:0]  spi_rx_ext;
@@ -144,7 +160,7 @@ atmega644 mcu (
 	.spi_on(1'b1), .spi_sck(spi_sck), .spi_mosi(spi_mosi), .spi_miso(sd_miso), .spi_start(spi_start),
 	.spi_tx(spi_tx), .spi_done(spi_done), .spi_ext(spi_ext), .spi_rx_ext(spi_rx_ext),
 	.spm_fill(spm_fill), .spm_erase(spm_erase), .spm_write(spm_write), .spm_z(spm_z), .spm_r(spm_r),
-	.spm_busy(spm_busy),
+	.spm_busy(spm_busy), .freeze(sd_freeze),
 	.ee_req(ee_req), .ee_we(ee_we), .ee_addr(ee_addr[10:0]), .ee_din(ee_din), .ee_ack(ee_ack), .ee_dout(ee_dout),
 	.ee_cpu_wr(ee_cpu_wr), .ee_cpu_addr(ee_cpu_addr), .wdt_reset(wdt_reset),
 	.insn_start(), .dbg_pc(dbg_pc)
@@ -170,7 +186,7 @@ wire [7:0]  line_row;
 wire [11:0] ring_addr;
 wire [7:0]  ring_data;
 uze_video #(.V_FIRST(V_FIRST)) video (
-	.clk(clk), .rst(areset), .pixel(cpu_rst ? 8'd0 : pixel), .sync(portb[0]),
+	.clk(clk), .rst(areset), .freeze(sd_freeze), .pixel(cpu_rst ? 8'd0 : pixel), .sync(portb[0]),
 	.line_tg(line_tg), .line_bank(line_bank), .line_row(line_row), .frame_start(),
 	.rd_clk(clk_sdr), .rd_addr(ring_addr), .rd_data(ring_data)
 );
@@ -215,7 +231,8 @@ wire cs_ram_n = porta[4] | ~ddra[4];
 wire cs_sd_n = portd[6] | ~ddrd[6];
 reg  [7:0] spi_txl = 8'd0;               // the byte of the transfer (spi_tx is valid at its start only)
 always @(posedge clk) if (spi_start) spi_txl <= spi_tx;
-wire [7:0] ram_rx, sd_out;
+wire [7:0] ram_rx;
+wire [7:0] sd_out /* verilator public_flat */;
 assign spi_ext = !cs_ram_n || (!cs_sd_n && sd_image);
 assign spi_rx_ext = !cs_ram_n ? ram_rx : sd_out;
 assign sd_cs_n = sd_image | cs_sd_n;
@@ -236,7 +253,7 @@ kg_sd_emu #(.CACHE(1)) sd_emu (
 	.hd_rd(hd_rd), .hd_wr(hd_wr), .hd_lba(hd_lba), .rq_lba(hd_rq_lba), .hd_busy(sdc_busy && sdc_slot == 3'd1),
 	.hd_done(sdc_done && sdc_slot == 3'd1), .hd_error(sdc_error),
 	.hd_byte_in_strobe(sdc_byte_in_strobe && sdc_slot == 3'd1), .hd_byte_addr(sdc_byte_addr),
-	.hd_byte_in_data(sdc_byte_in_data), .hd_byte_out_data(hd_byte_out), .waiting()
+	.hd_byte_in_data(sdc_byte_in_data), .hd_byte_out_data(hd_byte_out), .waiting(sd_waiting)
 );
 
 // ---------------------------------------------------------------- the EEPROM file (kg_bk_ram, slot 2)

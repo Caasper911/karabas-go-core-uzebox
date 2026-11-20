@@ -43,6 +43,7 @@ module atmega644 (
 	output [15:0] spm_z,
 	output [15:0] spm_r,
 	input         spm_busy,       // the program memory works on an erase / write (the CPU halts)
+	input         freeze,         // stop the whole chip, no time passes for the program (the uzebox: SD image wait)
 
 	input         ee_req,         // EEPROM port b (kg_bk_ram)
 	input         ee_we,
@@ -86,7 +87,7 @@ avr_io_m644 io (
 	.spi_on(spi_on), .spi_sck(spi_sck), .spi_mosi(spi_mosi), .spi_miso(spi_miso), .spi_start(spi_start),
 	.spi_tx(spi_tx), .spi_done(spi_done), .spi_ext(spi_ext), .spi_rx_ext(spi_rx_ext),
 	.spm(spm), .spm_z(spm_z), .spm_r(spm_r), .spm_fill(spm_fill), .spm_erase(spm_erase), .spm_write(spm_write),
-	.spm_busy(spm_busy), .ext_halt(spm_busy),
+	.spm_busy(spm_busy), .ext_halt(spm_busy), .freeze(freeze),
 	.ee_req(ee_req), .ee_we(ee_we), .ee_addr(ee_addr), .ee_din(ee_din), .ee_ack(ee_ack), .ee_dout(ee_dout),
 	.ee_cpu_wr(ee_cpu_wr), .ee_cpu_addr(ee_cpu_addr), .wdt_reset(wdt_reset)
 );

@@ -68,6 +68,8 @@ module avr_io_m644 (
 	output            spm_write,    // one clock: write the page buffer to page spm_z[15:8]
 	input             spm_busy,     // the program memory erases / writes (the CPU is halted meanwhile)
 	input             ext_halt,     // halt the CPU (SPM)
+	input             freeze,       // stop the whole chip (CPU, timer 1, watchdog, EEPROM, SPI): the uzebox waits for
+	                                // a sector of the SD image, the game sees no time pass
 
 	// EEPROM: a second port (kg_bk_ram: the .sav file) and the writes of the CPU
 	input             ee_req,       // held until ee_ack
@@ -160,7 +162,7 @@ always @(posedge clk) begin
 	if (rst) begin
 		tcnt1 <= 16'd0; temp <= 8'd0; tccr1b <= 8'd0; ocr1a <= 16'd0; ocr1b <= 16'd0; timsk1 <= 8'd0;
 		tifr1 <= 8'd0; t1_ev <= 3'd0;
-	end else begin
+	end else if (!freeze) begin
 		tifr1 <= (tifr1 & ~t1_clr & ~t1_ack) | {5'd0, t1_ev};
 		t1_ev <= {ev_b, ev_a, ev_tov};
 		if (t1_on) tcnt1 <= ev_a ? 16'd0 : tcnt1 + 16'd1;
@@ -194,7 +196,7 @@ wire [20:0] wdt_sum  = {1'b0, wdt_base} + {1'b0, wdt_acc} + 21'd1;
 always @(posedge clk) begin
 	if (rst) begin
 		wdtcsr <= 8'd0; wdt_acc <= 20'd0; wdt_cnt <= 20'd0; wdt_reset_r <= 1'b0;
-	end else begin
+	end else if (!freeze) begin
 		if (wr && io_addr == A_WDTCSR) wdtcsr <= io_wdata;
 		if (irq_ack && irq_wdt) wdtcsr[7] <= 1'b0;
 		if (insn_end) begin
@@ -238,11 +240,11 @@ always @(posedge clk) begin
 end
 assign ee_cpu_wr = ee_wr;
 assign ee_cpu_addr = eear;
-assign halt = ee_halt != 3'd0 || ext_halt;
+assign halt = ee_halt != 3'd0 || ext_halt || freeze;
 always @(posedge clk) begin
 	if (rst) begin
 		eecr <= 8'd0; eedr <= 8'd0; eear <= 11'd0; ee_halt <= 3'd0; ee_rd <= 1'b0; ee_wr <= 1'b0;
-	end else begin
+	end else if (!freeze) begin
 		ee_wr <= 1'b0;
 		if (ee_halt != 3'd0) begin
 			ee_halt <= ee_halt - 3'd1;
@@ -306,7 +308,7 @@ always @(posedge clk) begin
 	spi_done_r <= 1'b0;
 	if (rst) begin
 		spcr <= 8'd0; spsr <= 8'd0; spi_busy <= 1'b0; spi_sck <= 1'b0; spi_mosi <= 1'b1; spif_arm <= 1'b0;
-	end else begin
+	end else if (!freeze) begin
 		if (wr && io_addr == A_SPCR) spcr <= io_wdata;
 		if (wr && io_addr == A_SPSR) spsr <= spi_on ? {spsr[7:1], io_wdata[0]} : io_wdata;
 		if (io_rd && io_addr == A_SPSR && spsr[7]) spif_arm <= 1'b1;
@@ -361,7 +363,7 @@ reg [2:0] ivce_cnt = 3'd0;
 initial ivsel = 1'b0;
 always @(posedge clk) begin
 	if (rst) begin ivsel <= 1'b0; ivce_cnt <= 3'd0; end
-	else begin
+	else if (!freeze) begin
 		if (ivce_cnt != 3'd0) ivce_cnt <= ivce_cnt - 3'd1;
 		if (wr && io_addr == A_MCUCR) begin
 			if (io_wdata[0]) ivce_cnt <= 3'd4;

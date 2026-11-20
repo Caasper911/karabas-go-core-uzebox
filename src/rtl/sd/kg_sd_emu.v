@@ -84,7 +84,7 @@ reg stale = 1'b0;
 
 // port a: the card (the sector of hd_lba, buf_addr), port b: img_sdc (the sector of the request, rq_line: a read
 // sector in, a written one out). The bytes of a stale read are not taken.
-reg [8:0] buf_addr = 9'd0;    // the byte of the card (read: the next one out, write: the next one in)
+reg [8:0] buf_addr /* verilator public_flat */ = 9'd0;    // the byte of the card (read: the next one out, write: the next one in)
 wire [7:0] buf_q;
 reg buf_we = 1'b0;
 reg [7:0] buf_wd = 8'h00;
@@ -141,7 +141,7 @@ localparam S_IDLE = 4'd0, S_CMD = 4'd1, S_RESP = 4'd2, S_RD_WAIT = 4'd3, S_RD_DA
 	S_RD_CRC = 4'd5, S_WR_TOKEN = 4'd6, S_WR_DATA = 4'd7, S_WR_CRC = 4'd8, S_WR_RESP = 4'd9,
 	S_WR_BUSY = 4'd10, S_NCR = 4'd11;
 
-reg [3:0] state = S_IDLE;
+reg [3:0] state /* verilator public_flat */ = S_IDLE;
 reg [5:0] cmd = 6'd0;
 reg [31:0] arg = 32'd0;
 reg [2:0] cnt = 3'd0;         // the bytes of a command

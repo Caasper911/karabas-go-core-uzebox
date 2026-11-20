@@ -1,7 +1,7 @@
 {
     "id": "uzebox",
     "name": "Uzebox",
-    "build": "26112015",
+    "build": "26112016",
     "visible": true,
     "type": "osd",
     "order": 41,
@@ -17,7 +17,7 @@
     "boards": {
         "minig": {
             "link": 2,
-            "build": "26112015",
+            "build": "26112016",
             "bitstream": "karabas_minig.bin"
         }
     },

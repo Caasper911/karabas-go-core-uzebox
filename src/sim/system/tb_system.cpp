@@ -196,6 +196,9 @@ static void img_tick() {
 // ------------------------------------------------------------------ clocks (ps)
 static const uint64_t HALF_CPU = 17391, HALF_SDR = 6957, HALF_VID = 18519;
 static uint64_t t_cpu = HALF_CPU, t_sdr = HALF_SDR, t_vid = HALF_VID;
+static uint64_t sd_bytes = 0, sd_bad = 0;
+static uint64_t frozen = 0, freezes = 0;   // clocks the chip waited for SD image sectors, waits
+static bool frozen_last = false;
 static uint64_t snd_changes = 0; static uint16_t snd_last = 0;
 
 // advance to the next rising edge of the CPU clock, running the other clocks on the way
@@ -210,8 +213,23 @@ static void cpu_cycle() {
 		top->eval(); sram_eval(); top->eval();
 		if (vid_rise) vid_capture();
 		if (cpu_rise) {
-			cyc++; ref_tick(); img_tick();
+			cyc++; img_tick();
+			// the frozen chip (SD image wait): no time passes for the game, nor for the reference frames
+			bool fz = top->rootp->uzebox__DOT__sd_freeze;
+			if (fz) { frozen++; if (!frozen_last) freezes++; } else ref_tick();
+			frozen_last = fz;
 			if (top->audio != snd_last) { snd_changes++; snd_last = top->audio; }
+			// the bytes of the SD image as the CPU takes them in a data block (kg_sd_emu S_RD_DATA = 4)
+			auto *R = top->rootp;
+			if (!files[1].empty() && R->uzebox__DOT__spi_done && R->uzebox__DOT__sd_emu__DOT__state == 4) {
+				size_t a = (size_t)R->uzebox__DOT__hd_lba * 512 + R->uzebox__DOT__sd_emu__DOT__buf_addr;
+				uint8_t want = a < files[1].size() ? files[1][a] : 0;
+				sd_bytes++;
+				if (R->uzebox__DOT__sd_out != want && sd_bad++ < 8)
+					printf("SD byte wrong: sector %u byte %u: %02x, the image has %02x (cycle %llu)\n",
+					       R->uzebox__DOT__hd_lba, R->uzebox__DOT__sd_emu__DOT__buf_addr, R->uzebox__DOT__sd_out, want,
+					       (unsigned long long)cyc);
+			}
 			return;
 		}
 	}
@@ -343,6 +361,8 @@ int main(int argc, char **argv) {
 	printf("game draws: cycles %d..%d after the line start (window 168..1607), rows %d..%d (window 0..223)%c", ext_x0, ext_x1, ext_y0, ext_y1, 10);
 	{ auto *R = top->rootp; printf("io: SPCR %02x SPSR %02x SPDR %02x DDRA %02x PORTA %02x DDRD %02x PORTD %02x UCSR0B %02x%c", R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2C], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2D], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2E], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x01], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x02], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0A], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0B], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0xA1], 10); }
 	printf("file mounter: %d sectors read, %d written, EEPROM file mounted %d times%c", img_reads, img_writes, bk_mounts, 10);
+	printf("SD image bytes taken by the CPU: %llu, wrong %llu%c", (unsigned long long)sd_bytes, (unsigned long long)sd_bad, 10);
+	printf("SD image waits: %llu, %.1f ms frozen%c", (unsigned long long)freezes, frozen / 28750.0, 10);
 	if (sav_out) { FILE *fo = fopen(sav_out, "wb"); if (fo) { fwrite(files[2].data(), 1, files[2].size(), fo); fclose(fo); } }
 	printf("SPI RAM: a byte late: %d%c", (int)top->rootp->uzebox__DOT__spiram__DOT__late_r, 10);
 	printf("game frames %d, output frames %d, with a picture %d\n", ref_frames, out_frames, shown);
