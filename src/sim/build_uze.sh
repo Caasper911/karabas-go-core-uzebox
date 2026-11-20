@@ -1,16 +1,20 @@
 #!/bin/bash
 # Build the Uzebox tools (uzem, packrom, gconvert, ...) and games from upstream/uzebox in a copy
 # (src/sim/build/uze), so the submodule stays clean. Needs msys2 ucrt64 with avr-gcc, SDL2, pkgconf.
-# Usage: src/sim/build_uze.sh [demo ...]   (default: the test set below)
+# Usage: src/sim/build_uze.sh [demo ...]   (default: the test set below; kbdtest needs tutorial: its font)
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 UP="$HERE/../../upstream/uzebox"
 B="$HERE/build/uze"
-DEMOS="${*:-unittest Megatris SpriteDemo Arkanoid DonkeyKong Mode9Demo Mode5Demo Mode13ExtendedDemo SpaceInvaders PacMan ControllerTester MusicDemo}"
+DEMOS="${*:-unittest Megatris SpriteDemo Arkanoid DonkeyKong Mode9Demo Mode5Demo Mode13ExtendedDemo SpaceInvaders PacMan ControllerTester MusicDemo tutorial kbdtest}"
 mkdir -p "$B"
 for d in kernel tools Makefile; do [ -e "$B/$d" ] || cp -r "$UP/$d" "$B/"; done
 mkdir -p "$B/demos"
-for d in $DEMOS; do [ -e "$B/demos/$d" ] || cp -r "$UP/demos/$d" "$B/demos/"; done
+# the test programs of this repo (src/sim/<name>: kbdtest) are copied each time, the upstream demos once
+for d in $DEMOS; do
+  if [ -d "$HERE/$d" ]; then mkdir -p "$B/demos/$d" && cp -r "$HERE/$d/." "$B/demos/$d/"
+  else [ -e "$B/demos/$d" ] || cp -r "$UP/demos/$d" "$B/demos/"; fi
+done
 MSYSTEM=UCRT64 /c/msys64/usr/bin/bash -lc "
 cd '$B' && mkdir -p bin roms &&
 for t in packrom gconvert mconvert dconvert uzem; do make -C tools/\$t OS=WIN32 DEST_DIR=\$(pwd)/bin/ >/dev/null || exit 1; done &&

@@ -31,6 +31,12 @@ module uzebox #(
 	input      [15:0] joy_l,
 	input      [15:0] joy_r,
 	input      [55:0] kbd,
+	input      [1:0]  kb_mode,        // OSD Keyboard: 0 Auto, 1 Pad, 2 PS/2 (uze_pads)
+	input      [7:0]  ps2_code,       // PS/2 set 2 bytes of the USB keyboard
+	input             ps2_wr,
+	input             uart_rxd,       // USART0: the ESP8266 (Uzenet)
+	output            uart_txd,
+	output            uart_cts,
 
 	output     [20:0] sram_a,
 	input      [15:0] sram_dq_i,
@@ -163,6 +169,7 @@ atmega644 mcu (
 	.spm_busy(spm_busy), .freeze(sd_freeze),
 	.ee_req(ee_req), .ee_we(ee_we), .ee_addr(ee_addr[10:0]), .ee_din(ee_din), .ee_ack(ee_ack), .ee_dout(ee_dout),
 	.ee_cpu_wr(ee_cpu_wr), .ee_cpu_addr(ee_cpu_addr), .wdt_reset(wdt_reset),
+	.uart_rxd(uart_rxd), .uart_txd(uart_txd), .uart_cts(uart_cts),
 	.insn_start(), .dbg_pc(dbg_pc)
 );
 
@@ -178,7 +185,8 @@ uze_pm_sram pm (
 	.sram_we_n(sram_we_n), .sram_oe_n(sram_oe_n)
 );
 
-uze_pads pads (.clk(clk), .porta(porta), .joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .data(pad_data));
+uze_pads pads (.clk(clk), .porta(porta), .joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .rst(cpu_rst), .kb_mode(kb_mode),
+	.ps2_code(ps2_code), .ps2_wr(ps2_wr), .kb_on(), .data(pad_data));
 
 wire        line_tg;
 wire [1:0]  line_bank;

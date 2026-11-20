@@ -17,6 +17,8 @@
 #include <cstring>
 #include <cstdint>
 #include <vector>
+#include <deque>
+#include <string>
 #include <string>
 #include <map>
 #include "../lockstep/png.h"
@@ -193,6 +195,85 @@ static void img_tick() {
 	}
 }
 
+// ------------------------------------------------------------------ USB keyboard: PS/2 set 2 bytes (kg_mcu2 PS2_*)
+// -K frame:text types text from that output frame on: each key a make code, ~20 ms later its break (F0 code),
+// a byte every 0.5 ms as the MCU sends them; capitals with left shift (12). \n = Enter, ~1 = F1.
+static std::deque<std::pair<uint64_t, uint8_t>> ps2_q;   // (cycle, byte)
+static int ps2_sent = 0;
+static uint8_t set2(char c) {
+	static const char *row = "abcdefghijklmnopqrstuvwxyz0123456789";
+	static const uint8_t code[] = {0x1C,0x32,0x21,0x23,0x24,0x2B,0x34,0x33,0x43,0x3B,0x42,0x4B,0x3A,0x31,0x44,0x4D,
+		0x15,0x2D,0x1B,0x2C,0x3C,0x2A,0x1D,0x22,0x35,0x1A,0x45,0x16,0x1E,0x26,0x25,0x2E,0x36,0x3D,0x3E,0x46};
+	const char *p = strchr(row, c);
+	if (p && c) return code[p - row];
+	if (c == ' ') return 0x29; if (c == '\n') return 0x5A; if (c == '.') return 0x49; if (c == ',') return 0x41;
+	return 0;
+}
+static void ps2_type(uint64_t at, const char *s) {
+	const uint64_t B = 14375, K = 575000;       // 0.5 ms between bytes, 20 ms a key
+	for (; *s; s++) {
+		bool sh = false; uint8_t c;
+		if (s[0] == '~' && s[1] == '1') { c = 0x05; s++; }
+		else { char ch = *s; if (ch >= 'A' && ch <= 'Z') { sh = true; ch += 32; } c = set2(ch); }
+		if (!c) continue;
+		if (sh) { ps2_q.push_back({at, 0x12}); at += B; }
+		ps2_q.push_back({at, c}); at += K;
+		ps2_q.push_back({at, 0xF0}); at += B; ps2_q.push_back({at, c}); at += B;
+		if (sh) { ps2_q.push_back({at, 0xF0}); at += B; ps2_q.push_back({at, 0x12}); at += B; }
+		at += K;
+	}
+}
+static void ps2_tick() {
+	top->ps2_wr = 0;
+	if (!ps2_q.empty() && cyc >= ps2_q.front().first) {
+		top->ps2_code = ps2_q.front().second; top->ps2_wr = 1; ps2_q.pop_front(); ps2_sent++;
+	}
+}
+
+// ------------------------------------------------------------------ ESP8266 on USART0 (AT firmware, echo on)
+// 8N1 at ESP_BIT clocks a bit (248: UBRR 30 with U2X, 115200 of the Uzenet programs); each byte from the core is
+// echoed, a line "AT..." gets "\r\nOK\r\n". A byte starts only while uart_cts is 0.
+static int ESP_BIT = 248;
+static std::string esp_from_core, esp_to_core, esp_line;
+static std::deque<uint8_t> esp_q;
+static int er_st = 0, er_t = 0, er_n = 0, er_sh = 0;   // receiver (from the core)
+static int et_t = 0, et_n = 0, et_sh = 0;              // transmitter (to the core)
+static int esp_drop = 0;
+static void esp_tick() {
+	int txd = top->uart_txd;
+	if (er_st == 0) { if (!txd) { er_st = 1; er_t = ESP_BIT / 2; er_n = 0; er_sh = 0; } }
+	else if (--er_t == 0) {
+		er_t = ESP_BIT;
+		if (er_st == 1) { if (txd) er_st = 0; else er_st = 2; }
+		else if (er_n < 8) { er_sh |= txd << er_n; er_n++; }
+		else {
+			er_st = 0;
+			uint8_t b = er_sh; esp_from_core += (char)b;
+			esp_q.push_back(b);                               // echo
+			if (b == '\r' || b == '\n') {
+				if (esp_line.size() >= 2 && esp_line[0] == 'A' && esp_line[1] == 'T')
+					for (const char *s = "\r\nOK\r\n"; *s; s++) esp_q.push_back(*s);
+				esp_line.clear();
+			} else esp_line += (char)b;
+		}
+	}
+	if (et_n == 0) {
+		top->uart_rxd = 1;
+		if (!esp_q.empty() && !top->uart_cts) {
+			et_sh = (esp_q.front() << 1) | 0x200; esp_to_core += (char)esp_q.front(); esp_q.pop_front();
+			et_n = 10; et_t = ESP_BIT; top->uart_rxd = 0;
+		}
+	} else if (--et_t == 0) {
+		et_sh >>= 1; et_n--; et_t = ESP_BIT;
+		top->uart_rxd = et_n ? (et_sh & 1) : 1;
+	}
+}
+static std::string esc(const std::string &s) {
+	std::string o;
+	for (unsigned char c : s) { if (c == '\r') o += "\\r"; else if (c == '\n') o += "\\n"; else if (c < 32 || c > 126) { char b[8]; snprintf(b, 8, "\\x%02x", c); o += b; } else o += c; }
+	return o;
+}
+
 // ------------------------------------------------------------------ clocks (ps)
 static const uint64_t HALF_CPU = 17391, HALF_SDR = 6957, HALF_VID = 18519;
 static uint64_t t_cpu = HALF_CPU, t_sdr = HALF_SDR, t_vid = HALF_VID;
@@ -213,7 +294,7 @@ static void cpu_cycle() {
 		top->eval(); sram_eval(); top->eval();
 		if (vid_rise) vid_capture();
 		if (cpu_rise) {
-			cyc++; img_tick();
+			cyc++; img_tick(); ps2_tick(); esp_tick();
 			// the frozen chip (SD image wait): no time passes for the game, nor for the reference frames
 			bool fz = top->rootp->uzebox__DOT__sd_freeze;
 			if (fz) { frozen++; if (!frozen_last) freezes++; } else ref_tick();
@@ -242,6 +323,8 @@ int main(int argc, char **argv) {
 	if (argc < 2) { fprintf(stderr, "usage: %s game.uze [-n frames] [-p png] [-e n] [-k f:n:key]\n", argv[0]); return 2; }
 	int max_frames = 10;
 	std::vector<int> k_at, k_n, k_key;      // -k frame:frames:usb_key (output frames), may repeat
+	std::vector<std::pair<int, std::string>> type_at;   // -K frame:text (PS/2 set 2 bytes from that output frame)
+	int kb_mode = 0;                         // -m: OSD Keyboard 0 Auto, 1 Pad, 2 PS/2
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "-n") && i + 1 < argc) max_frames = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-p") && i + 1 < argc) png_prefix = argv[++i];
@@ -261,6 +344,11 @@ int main(int argc, char **argv) {
 			int ch; while ((ch = fgetc(fi)) != EOF) rom.push_back(ch);
 			fclose(fi);
 		} else if (!strcmp(argv[i], "-L")) boot_loader = 1;      // Boot = Loader
+		else if (!strcmp(argv[i], "-m") && i + 1 < argc) kb_mode = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "-K") && i + 1 < argc) {
+			const char *a = argv[++i], *c = strchr(a, ':');
+			if (c) type_at.push_back({atoi(a), std::string(c + 1)});
+		}
 		else if (!strcmp(argv[i], "-E") && i + 1 < argc) sav_out = argv[++i];   // the EEPROM file at the end
 		else if (!strcmp(argv[i], "-s") && i + 1 < argc) {        // the EEPROM file to start with
 			FILE *fi = fopen(argv[++i], "rb");
@@ -279,6 +367,7 @@ int main(int argc, char **argv) {
 
 	top = new Vuzebox;
 	top->areset = 1; top->areset_sdr = 1; top->reset = 0; top->joy_l = 0; top->joy_r = 0; top->kbd = 0;
+	top->kb_mode = kb_mode; top->ps2_wr = 0; top->uart_rxd = 1;
 	top->sd_image = files[1].empty() ? 0 : 1; top->boot = boot_loader; top->img_flush = 0; top->sd_miso = 1;   // the image if one is given, else no card (MISO high)
 	top->clk = 0; top->clk_sdr = 0; top->clk_vid = 0;
 	for (int i = 0; i < 8; i++) cpu_cycle();
@@ -335,6 +424,7 @@ int main(int argc, char **argv) {
 		for (size_t q = 0; q < k_at.size(); q++)
 			if (out_frames >= k_at[q] && out_frames < k_at[q] + k_n[q]) kb = (uint64_t)k_key[q] << 8;
 		top->kbd = kb;
+		for (auto &t : type_at) if (t.first >= 0 && out_frames >= t.first) { ps2_type(cyc, t.second.c_str()); t.first = -1; }
 		cpu_cycle();
 		if (getenv("PADDBG")) {               // the pad read of the game: data bit at each rising clock after the latch
 			static int pa_prev = 0, nbits = 0, shown = 0; static uint32_t bits = 0;
@@ -363,6 +453,9 @@ int main(int argc, char **argv) {
 	printf("file mounter: %d sectors read, %d written, EEPROM file mounted %d times%c", img_reads, img_writes, bk_mounts, 10);
 	printf("SD image bytes taken by the CPU: %llu, wrong %llu%c", (unsigned long long)sd_bytes, (unsigned long long)sd_bad, 10);
 	printf("SD image waits: %llu, %.1f ms frozen%c", (unsigned long long)freezes, frozen / 28750.0, 10);
+	if (ps2_sent) printf("PS/2 bytes sent: %d%c", ps2_sent, 10);
+	if (!esp_from_core.empty() || !esp_to_core.empty())
+		printf("UART from the core: \"%s\"%cUART to the core: \"%s\"%c", esc(esp_from_core).c_str(), 10, esc(esp_to_core).c_str(), 10);
 	if (sav_out) { FILE *fo = fopen(sav_out, "wb"); if (fo) { fwrite(files[2].data(), 1, files[2].size(), fo); fclose(fo); } }
 	printf("SPI RAM: a byte late: %d%c", (int)top->rootp->uzebox__DOT__spiram__DOT__late_r, 10);
 	printf("game frames %d, output frames %d, with a picture %d\n", ref_frames, out_frames, shown);

@@ -10,6 +10,15 @@
 // MCU joystick bits: 0 connected, 1 up, 2 down, 3 left, 4 right, 5 start, 6 A, 7 B, 8 C, 9 X, 10 Y,
 // 11 Z, 12 mode; C = R, Z = L, mode = Select. Up + down / left + right together: right / down released
 // (as Uzem).
+//
+// Uzebox keyboard (the ATtiny85 adapter of schematics/Keyboard-Interface in pad port 2, kernel keyboard.c,
+// Uzem uzeKbState): a transfer starts with clock low while latch is high; after clock high / latch low, each
+// falling clock edge shifts a command bit in from the latch line and a key bit out on the data line of pad 2,
+// MSB first; the first byte of a transfer is the next PS/2 set 2 byte of the USB keyboard (0 = none), a
+// command byte 01 (KB_SEND_END) ends the transfer. Between transfers port 2 is pad 2.
+// kb_mode (OSD Keyboard): 0 Auto, as Uzem: the keys are pad 1 until a program starts a keyboard transfer,
+// then keyboard only (until rst: a new game, a reset); 1 Pad: the keys are always pad 1, the adapter answers
+// no key; 2 PS/2: always the keyboard.
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 
 module uze_pads (
@@ -18,8 +27,68 @@ module uze_pads (
 	input      [15:0] joy_l,
 	input      [15:0] joy_r,
 	input      [55:0] kbd,          // { key6 .. key1, modifiers } (USB HID boot report)
+	input             rst,          // the CPU reset: Auto goes back to the pad
+	input      [1:0]  kb_mode,      // 0 Auto, 1 Pad, 2 PS/2
+	input      [7:0]  ps2_code,     // PS/2 set 2 bytes of the USB keyboard (kg_mcu2 PS2_*, kind 0)
+	input             ps2_wr,
+	output            kb_on,        // the keys go to the keyboard, not pad 1
 	output     [1:0]  data          // PINA[1:0]
 );
+
+// ---------------------------------------------------------------- keyboard adapter
+localparam KB_STOP = 2'd0, KB_START = 2'd1, KB_READY = 2'd2;
+reg  [1:0] kb_st /* verilator public_flat */ = KB_STOP;
+reg        kb_seen = 1'b0;      // Auto: a program started a keyboard transfer
+reg  [3:0] kb_cnt = 4'd0;
+reg  [7:0] kb_out = 8'd0;       // command bits from the latch line
+reg  [7:0] kb_in = 8'd0;        // key bits out
+reg        kb_bit = 1'b0;
+reg        kb_hold = 1'b0;      // the last bit of a transfer: the line stays the key's until the clock rises
+reg  [1:0] kb_pa_d = 2'b10;     // clock, latch a clock ago
+assign kb_on = kb_mode == 2'd2 || (kb_mode == 2'd0 && kb_seen);
+
+// 16-byte fifo of the set 2 bytes (only while the keys go to the keyboard; a byte with the fifo full is lost)
+reg  [7:0] kq [0:15];
+reg  [3:0] kq_wp = 4'd0, kq_rp = 4'd0;
+reg  [4:0] kq_n = 5'd0;
+wire       kq_push = ps2_wr && kb_on && kq_n != 5'd16;
+wire       kb_fall = kb_pa_d[1] && !porta[3];
+// the start condition is a change into clock low / latch high (Uzem checks it at PORTA writes only: the lines stay
+// so after the last bit of KB_SEND_END)
+wire       kb_go = porta[3:2] == 2'b01 && kb_pa_d != 2'b01;
+wire       kq_pop = kb_st == KB_READY && kb_fall && kb_cnt == 4'd8 && kq_n != 5'd0;
+always @(posedge clk) begin
+	if (kq_push) begin kq[kq_wp] <= ps2_code; kq_wp <= kq_wp + 4'd1; end
+	if (kq_pop) kq_rp <= kq_rp + 4'd1;
+	kq_n <= kq_n + {4'd0, kq_push} - {4'd0, kq_pop};
+	if (!kb_on) begin kq_rp <= 4'd0; kq_wp <= 4'd0; kq_n <= 5'd0; end
+end
+
+always @(posedge clk) begin
+	kb_pa_d <= porta[3:2];
+	if (porta[3]) kb_hold <= 1'b0;
+	if (rst) begin
+		kb_st <= KB_STOP; kb_seen <= 1'b0;
+	end else case (kb_st)
+		KB_STOP:
+			if (kb_go) begin kb_st <= KB_START; if (kb_mode == 2'd0) kb_seen <= 1'b1; end
+		KB_START:
+			if (porta[3:2] == 2'b10) begin kb_st <= KB_READY; kb_cnt <= 4'd8; end
+		default:
+			if (kb_fall) begin
+				// the first bit of a byte: the next key (0 = none; Pad mode: never a key)
+				kb_bit <= kb_cnt == 4'd8 ? (kq_n != 5'd0 && kq[kq_rp][7]) : kb_in[7];
+				kb_in <= kb_cnt == 4'd8 ? (kq_n != 5'd0 ? {kq[kq_rp][6:0], 1'b0} : 8'd0) : {kb_in[6:0], 1'b0};
+				kb_out <= {(kb_cnt == 4'd8 ? 7'd0 : kb_out[6:0]), porta[2]};
+				if (kb_cnt == 4'd1) begin
+					kb_cnt <= 4'd8;
+					if ({kb_out[6:0], porta[2]} == 8'h01) begin kb_st <= KB_STOP; kb_hold <= 1'b1; end   // KB_SEND_END
+				end else
+					kb_cnt <= kb_cnt - 4'd1;
+			end
+	endcase
+end
+
 
 function [11:0] from_joy;         // pressed = 1, SNES order
 	input [15:0] j;
@@ -59,7 +128,7 @@ function [11:0] fix_dirs;          // Up+Down: Down off, Left+Right: Right off
 	end
 endfunction
 
-wire [11:0] p1 = fix_dirs(from_joy(joy_l) | kb_fix);
+wire [11:0] p1 = fix_dirs(from_joy(joy_l) | (kb_on ? 12'd0 : kb_fix));
 wire [11:0] p2 = fix_dirs(from_joy(joy_r));
 wire        c1 = 1'b1;            // pad 1 is always there (the keyboard)
 wire        c2 = joy_r[0];
@@ -76,6 +145,6 @@ always @(posedge clk) begin
 		s2 <= {c2 ? 1'b0 : 1'b1, s2[31:1]};
 	end
 end
-assign data = {s2[0], s1[0]};
+assign data = {(kb_st == KB_READY || kb_hold) ? kb_bit : s2[0], s1[0]};
 
 endmodule

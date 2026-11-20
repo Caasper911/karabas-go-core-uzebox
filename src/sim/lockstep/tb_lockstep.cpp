@@ -143,7 +143,7 @@ int main(int argc, char **argv) {
 	}
 
 	top = new Vatmega644;
-	top->pina = 0xFF; top->pinb = 0; top->pinc = 0; top->pind = 0;
+	top->pina = 0xFF; top->pinb = 0; top->pinc = 0; top->pind = 0; top->uart_rxd = 1;
 	top->rst = 1; top->clk = 0; top->eval();
 	tick(); tick();
 	top->rst = 0; top->eval();
@@ -152,7 +152,7 @@ int main(int argc, char **argv) {
 	uint64_t steps = 0, last_start = rtl_cycle;
 	uint32_t ring[16]; int rp = 0;
 	// PINx: inputs; PORTB / PORTC / OCR2A: Uzem does not store them; the rest: compared above (own registers)
-	const int io_skip[] = {0x00, 0x03, 0x05, 0x06, 0x08, 0x09, 0x0B, 0x16, 0x1F, 0x20, 0x3D, 0x3E, 0x3F, 0x40, 0x64, 0x65, 0x93};
+	const int io_skip[] = {0x00, 0x03, 0x05, 0x06, 0x08, 0x09, 0x0B, 0x16, 0x1F, 0x20, 0x3D, 0x3E, 0x3F, 0x40, 0x64, 0x65, 0x93, 0xA0, 0xA2, 0xA5, 0xA6};   // + UCSR0A, UCSR0C, UBRR0H, UDR0 (USART: Uzem has none)
 	int pad_frame = -1;
 	uint32_t lcg = 12345;
 	while (frames < max_frames) {
@@ -242,6 +242,13 @@ int main(int argc, char **argv) {
 		u->PORTB = top->portb;
 		u->PORTC = top->rootp->atmega644__DOT__io__DOT__portc;
 		u->OCR2A = top->ocr2a;
+		// Uzem has no USART (its registers are memory, UCSR0A reads 0): the ATmega644 has UDRE0 set while the transmit
+		// buffer is empty (0x20 after reset; the kernels with MIDI in / UART poll UCSR0A every line), UCSR0C 0x06 after
+		// reset, UBRR0H 4 bits, UDR0 the receive fifo (empty here: 0). Mode 3 (SpriteDemo) reads 0xC0..0xDF as a ring.
+		u->UCSR0A = top->rootp->atmega644__DOT__io__DOT__ucsr0a;
+		u->UCSR0C = top->rootp->atmega644__DOT__io__DOT__ucsr0c;
+		u->UBRR0H = top->rootp->atmega644__DOT__io__DOT__ubrr0 >> 8;
+		u->UDR0 = 0;
 	}
 	printf("OK: %llu instructions, %llu cycles, %d frames%s\n", (unsigned long long)steps,
 	       (unsigned long long)rtl_cycle, frames, lockstep ? ", RTL == Uzem" : " (RTL only)");

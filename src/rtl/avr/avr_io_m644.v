@@ -10,9 +10,10 @@
 //   - EEPROM 2 KB: a read halts the CPU 4 cycles, a write 2 cycles (contents start at 0, as Uzem);
 //   - PORTC: the pixel (value AND DDRC at the write), PORTD stores value AND DDRD (as Uzem);
 //   - OCR2A write: the audio sample (the kernel writes it once per line), PWM is not generated;
-//   - all other registers (timer 0 / 2, SPI, USART, ...) read back what was written (SPI / USART later).
+//   - SPI master, SPM, MCUCR IVSEL (Bootloader5), USART0 (below: the ESP8266 of Uzenet);
+//   - all other registers (timer 0 / 2, ...) read back what was written.
 // IO index = data address - 0x20. Interrupt vectors (word addresses): WDT 0x10, TIMER1_COMPA 0x1A,
-// TIMER1_COMPB 0x1C, TIMER1_OVF 0x1E.
+// TIMER1_COMPB 0x1C, TIMER1_OVF 0x1E, USART0_RX 0x28, USART0_UDRE 0x2A, USART0_TX 0x2C.
 
 module avr_io_m644 (
 	input             clk,
@@ -81,7 +82,12 @@ module avr_io_m644 (
 	output            ee_cpu_wr,    // the CPU wrote eeprom[ee_cpu_addr]
 	output     [10:0] ee_cpu_addr,
 
-	output            wdt_reset     // the watchdog times out in system reset mode: reset the MCU
+	output            wdt_reset,    // the watchdog times out in system reset mode: reset the MCU
+
+	// USART0 (PD0 RXD0 / PD1 TXD0): the ESP8266 of Uzenet
+	input             uart_rxd,
+	output reg        uart_txd,
+	output            uart_cts      // 1 = the receive fifo is filling: the other side should stop
 );
 
 localparam A_PINA = 8'h00, A_DDRA = 8'h01, A_PORTA = 8'h02, A_PINB = 8'h03, A_DDRB = 8'h04, A_PORTB = 8'h05,
@@ -89,7 +95,8 @@ localparam A_PINA = 8'h00, A_DDRA = 8'h01, A_PORTA = 8'h02, A_PINB = 8'h03, A_DD
            A_TIFR1 = 8'h16, A_EECR = 8'h1F, A_EEDR = 8'h20, A_EEARL = 8'h21, A_EEARH = 8'h22,
            A_WDTCSR = 8'h40, A_TIMSK1 = 8'h4F, A_TCCR1B = 8'h61, A_TCNT1L = 8'h64, A_TCNT1H = 8'h65,
            A_OCR1AL = 8'h68, A_OCR1AH = 8'h69, A_OCR1BL = 8'h6A, A_OCR1BH = 8'h6B,
-           A_TCCR2B = 8'h91, A_OCR2A = 8'h93, A_SPCR = 8'h2C, A_SPSR = 8'h2D, A_SPDR = 8'h2E, A_SPMCSR = 8'h37, A_MCUCR = 8'h35;
+           A_TCCR2B = 8'h91, A_OCR2A = 8'h93, A_SPCR = 8'h2C, A_SPSR = 8'h2D, A_SPDR = 8'h2E, A_SPMCSR = 8'h37, A_MCUCR = 8'h35,
+           A_UCSR0A = 8'hA0, A_UCSR0B = 8'hA1, A_UCSR0C = 8'hA2, A_UBRR0L = 8'hA4, A_UBRR0H = 8'hA5, A_UDR0 = 8'hA6;
 localparam WDT_CYCLES = 20'd457142;
 
 wire wr = io_wr;
@@ -148,14 +155,19 @@ wire irq_wdt = wdtcsr[7] & wdtcsr[6];
 wire irq_t1a = tifr1[1] & timsk1[1];
 wire irq_t1b = tifr1[2] & timsk1[2];
 wire irq_t1o = tifr1[0] & timsk1[0];
-assign irq = irq_wdt | irq_t1a | irq_t1b | irq_t1o;
+wire irq_t1 = irq_t1a | irq_t1b | irq_t1o;
+wire irq_rx, irq_udre, irq_tx;   // USART0
+assign irq = irq_wdt | irq_t1 | irq_rx | irq_udre | irq_tx;
 always @* begin
 	if (irq_wdt)      irq_vec = 6'h10;
 	else if (irq_t1a) irq_vec = 6'h1A;
 	else if (irq_t1b) irq_vec = 6'h1C;
-	else              irq_vec = 6'h1E;
+	else if (irq_t1o) irq_vec = 6'h1E;
+	else if (irq_rx)  irq_vec = 6'h28;
+	else if (irq_udre) irq_vec = 6'h2A;
+	else              irq_vec = 6'h2C;
 end
-wire [7:0] t1_ack = (irq_ack && !irq_wdt) ? (irq_t1a ? 8'h02 : irq_t1b ? 8'h04 : 8'h01) : 8'h00;
+wire [7:0] t1_ack = (irq_ack && !irq_wdt && irq_t1) ? (irq_t1a ? 8'h02 : irq_t1b ? 8'h04 : 8'h01) : 8'h00;
 wire [7:0] t1_clr = (wr && io_addr == A_TIFR1) ? (bitop ? (io_wdata & io_bitmask) : io_wdata) : 8'h00;
 
 always @(posedge clk) begin
@@ -335,6 +347,109 @@ always @(posedge clk) begin
 	end
 end
 
+// ---------------------------------------------------------------- USART0
+// Asynchronous 8N1 (UCSR0C is stored, not used), bit = 16 x (UBRR + 1) clocks, 8 x with U2X0. Receive: a 16-byte
+// fifo (the ATmega has 2): RXC0 while it holds a byte, a UDR0 read takes it; a byte with the fifo full is lost
+// (DOR0, until the next UDR0 read); FE0 a 0 stop bit. uart_cts rises at 8 bytes (the ESP stops after its byte).
+// Transmit: UDR0 -> buffer (UDRE0 = empty) -> shifter; TXC0 when the shifter ends with the buffer empty
+// (cleared by writing 1 or by its interrupt). The kernel polls the flags once a line (soundMixerInline.s).
+// The USART runs while the chip is frozen (the ESP does not stop; the fifo and CTS take the bytes).
+reg  [7:0]  ucsr0b = 8'd0;
+reg  [7:0]  ucsr0c /* verilator public_flat */ = 8'h06;
+reg  [11:0] ubrr0 /* verilator public_flat */ = 12'd0;
+reg         u2x = 1'b0, mpcm = 1'b0, txc = 1'b0, fe = 1'b0, dor = 1'b0;
+wire [11:0] ubrr1 = ubrr0 + 12'd1;
+wire [16:0] u_per = u2x ? {2'd0, ubrr1, 3'd0} : {1'b0, ubrr1, 4'd0};
+wire        rxen = ucsr0b[4], txen = ucsr0b[3];
+// receive
+reg  [7:0]  rq [0:15];
+reg  [3:0]  rq_wp = 4'd0, rq_rp = 4'd0;
+reg  [4:0]  rq_n = 5'd0;
+reg  [2:0]  rx_s = 3'b111;          // synchroniser
+reg  [16:0] rx_t = 17'd0;
+reg  [3:0]  rx_b = 4'd0;            // 0 idle, 1 start, 2..9 data, 10 stop
+reg  [7:0]  rx_sh = 8'd0;
+wire        udr_rd = io_rd && io_addr == A_UDR0;
+wire        rq_pop = udr_rd && rq_n != 5'd0;
+reg         rq_push = 1'b0;
+reg  [7:0]  rq_d = 8'd0;
+wire        rq_in = rq_push && rq_n != 5'd16;
+assign uart_cts = rq_n >= 5'd8;
+always @(posedge clk) begin
+	rx_s <= {rx_s[1:0], uart_rxd};
+	rq_push <= 1'b0;
+	if (rst || !rxen) begin
+		rx_b <= 4'd0;
+	end else if (rx_b == 4'd0) begin
+		if (!rx_s[2]) begin rx_b <= 4'd1; rx_t <= {1'b0, u_per[16:1]}; end      // start: the middle of the bit
+	end else if (rx_t != 17'd1) begin
+		rx_t <= rx_t - 17'd1;
+	end else begin
+		rx_t <= u_per;
+		rx_b <= rx_b + 4'd1;
+		if (rx_b == 4'd1 && rx_s[2]) rx_b <= 4'd0;                                // a glitch, not a start bit
+		if (rx_b >= 4'd2 && rx_b <= 4'd9) rx_sh <= {rx_s[2], rx_sh[7:1]};
+		if (rx_b == 4'd10) begin
+			rx_b <= 4'd0;
+			fe <= !rx_s[2];
+			rq_d <= rx_sh; rq_push <= 1'b1;
+		end
+	end
+	if (rq_in) begin rq[rq_wp] <= rq_d; rq_wp <= rq_wp + 4'd1; end
+	if (rq_pop) rq_rp <= rq_rp + 4'd1;
+	rq_n <= rq_n + {4'd0, rq_in} - {4'd0, rq_pop};
+	if (rq_push && rq_n == 5'd16) dor <= 1'b1;
+	else if (udr_rd) dor <= 1'b0;
+	if (rst) begin rq_wp <= 4'd0; rq_rp <= 4'd0; rq_n <= 5'd0; dor <= 1'b0; fe <= 1'b0; end
+end
+wire rxc = rq_n != 5'd0;
+// transmit
+reg         tx_full = 1'b0;
+reg  [7:0]  tx_buf = 8'd0;
+reg  [9:0]  tx_sh = 10'h3FF;
+reg  [3:0]  tx_n = 4'd0;            // bits left in the shifter
+reg  [16:0] tx_t = 17'd0;
+wire        udr_wr = wr && io_addr == A_UDR0;
+wire        txc_clr = wr && io_addr == A_UCSR0A && (bitop ? (io_bitmask & io_wdata & 8'h40) != 8'd0 : io_wdata[6]);
+initial uart_txd = 1'b1;
+always @(posedge clk) begin
+	if (rst) begin
+		ucsr0b <= 8'd0; ucsr0c <= 8'h06; ubrr0 <= 12'd0; u2x <= 1'b0; mpcm <= 1'b0; txc <= 1'b0;
+		tx_full <= 1'b0; tx_n <= 4'd0; uart_txd <= 1'b1;
+	end else begin
+		if (wr) case (io_addr)
+			A_UCSR0A: begin u2x <= io_wdata[1]; mpcm <= io_wdata[0]; end
+			A_UCSR0B: ucsr0b <= io_wdata;
+			A_UCSR0C: ucsr0c <= io_wdata;
+			A_UBRR0L: ubrr0[7:0] <= io_wdata;
+			A_UBRR0H: ubrr0[11:8] <= io_wdata[3:0];
+			default: ;
+		endcase
+		if (txc_clr || (irq_ack && irq_vec == 6'h2C)) txc <= 1'b0;
+		if (udr_wr && txen && !tx_full) begin tx_buf <= io_wdata; tx_full <= 1'b1; end
+		if (tx_n == 4'd0) begin
+			if (tx_full) begin
+				tx_sh <= {1'b1, tx_buf, 1'b0}; tx_n <= 4'd10; tx_t <= u_per; tx_full <= 1'b0;
+				uart_txd <= 1'b0;
+			end
+		end else if (tx_t != 17'd1) begin
+			tx_t <= tx_t - 17'd1;
+		end else begin
+			tx_t <= u_per;
+			tx_sh <= {1'b1, tx_sh[9:1]};
+			uart_txd <= tx_sh[1];
+			tx_n <= tx_n - 4'd1;
+			if (tx_n == 4'd1) begin uart_txd <= 1'b1; if (!tx_full) txc <= 1'b1; end
+		end
+		if (!txen) begin tx_n <= 4'd0; tx_full <= 1'b0; uart_txd <= 1'b1; end
+	end
+end
+wire udre = !tx_full;
+wire [7:0] ucsr0a /* verilator public_flat */ = {rxc, txc, udre, fe, dor, 1'b0, u2x, mpcm};
+assign irq_rx = ucsr0b[7] && rxc;
+assign irq_udre = ucsr0b[5] && udre;
+assign irq_tx = ucsr0b[6] && txc;
+
 // ---------------------------------------------------------------- SPM
 // SPMCSR (0x37): SPMEN 0, PGERS 1, PGWRT 2, BLBSET 3, RWWSRE 4, SIGRD 5, RWWSB 6, SPMIE 7. An SPM with SPMEN set
 // does: PGERS -> erase, PGWRT -> write, RWWSRE / BLBSET / SIGRD -> nothing, none -> fill the page buffer; the
@@ -406,6 +521,12 @@ always @* begin
 		A_SPSR:   io_rdata = spsr;
 		A_SPDR:   io_rdata = spdr_rx;
 		A_SPMCSR: io_rdata = spmcsr;
+		A_UCSR0A: io_rdata = ucsr0a;
+		A_UCSR0B: io_rdata = ucsr0b;
+		A_UCSR0C: io_rdata = ucsr0c;
+		A_UBRR0L: io_rdata = ubrr0[7:0];
+		A_UBRR0H: io_rdata = {4'd0, ubrr0[11:8]};
+		A_UDR0:   io_rdata = rq_n != 5'd0 ? rq[rq_rp] : 8'd0;
 		default:  io_rdata = gen_q;
 	endcase
 end
