@@ -5,7 +5,7 @@ Work in progress: a port of the [Uzebox](https://github.com/Uzebox/uzebox) retro
 
 Status: works on Mini G, Mini and Go (720x480p from a frame buffer: HDMI, VGA on Go; sound, SNES pads, the USB keyboard as the Uzebox keyboard or as
 pad 1, the USB mouse as the SNES mouse, the ESP8266 on USART0 (Uzenet, not checked yet), SPI RAM (8 MB or 128 KB), SD card
-or an SD image through the file mounter of the MCU, Bootloader5, EEPROM saved to a `.sav` file). While a program waits for a sector of the SD image, the console is frozen (picture held, sound paused), as
+or an SD card image (`.img` / `.bin`) from SD1 through the file mounter of the MCU, Bootloader5, EEPROM saved to a `.sav` file). While a program waits for a sector of the SD image, the console is frozen (picture held, sound paused), as
 the MCU serves a sector in a few ms. See [docs/PLAN.md](docs/PLAN.md) (in Russian). [Русская версия](README.ru.md).
 
 ## Uzebox: sites and software
@@ -26,6 +26,8 @@ the MCU serves a sector in a few ms. See [docs/PLAN.md](docs/PLAN.md) (in Russia
 
 On the board: put the `.uze` files in `/uzebox` on the SD card and pick one in the OSD (Game), or turn on
 Bootloader5 in the OSD and choose the game in it. The files a game reads (data, music, `.sav`) go next to it.
+SD card images are supported from SD1: set SD card = Image in the OSD and pick the image (`.img` / `.bin`, FAT16
+or FAT32) in SD image; the programs then see it as their SD card.
 
 ## Repository
 
