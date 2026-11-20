@@ -4,7 +4,7 @@
 //
 // The CPU is held in reset until a game is loaded (an FL load of a .uze, kind 2), while a load runs and
 // while `reset` is high (OSD Reset). Sound: the OCR2A sample the kernel writes once per line
-// (15.7 kHz), unsigned 8 bit, as `audio` (two's complement 16 bit, a quarter of full scale, clk).
+// (15.7 kHz), unsigned 8 bit, as `audio` (two's complement 16 bit, an eighth of full scale, clk).
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 
 module uzebox #(
@@ -141,7 +141,7 @@ reg sample_d = 1'b0;                 // OCR2A holds the new sample one clock aft
 always @(posedge clk) begin
 	sample_d <= sample;
 	if (cpu_rst) audio <= 16'd0;
-	else if (sample_d) audio <= {{3{~ocr2a[7]}}, ocr2a[6:0], 6'd0};   // -12 dB: full scale was too loud (26112004)
+	else if (sample_d) audio <= {{4{~ocr2a[7]}}, ocr2a[6:0], 5'd0};   // -18 dB (26112005 at -12 dB still too loud)
 end
 
 endmodule

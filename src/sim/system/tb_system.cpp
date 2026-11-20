@@ -44,9 +44,15 @@ static int scanline = -999, ref_frames = 0;
 static uint64_t prev_rise = 0, line_start = 0;
 static int prev_pb0 = 0;
 static std::map<uint64_t, uint64_t> rise_hist;
+static int ext_x0 = 99999, ext_x1 = -1, ext_y0 = 99999, ext_y1 = -99999;   // where the game draws
 static void ref_tick() {
 	auto *R = top->rootp;
 	linebuf[cyc & 0x7FF] = R->uzebox__DOT__pixel;
+	if (R->uzebox__DOT__pixel && scanline != -999) {
+		int x = (int)(cyc - line_start), y = scanline;
+		if (x < ext_x0) ext_x0 = x; if (x > ext_x1) ext_x1 = x;
+		if (y < ext_y0) ext_y0 = y; if (y > ext_y1) ext_y1 = y;
+	}
 	int pb0 = R->uzebox__DOT__portb & 1;
 	if (pb0 && !prev_pb0) {
 		uint64_t el = cyc - prev_rise;
@@ -207,6 +213,7 @@ int main(int argc, char **argv) {
 	printf("PB0 rise intervals (cycles: count):");
 	for (auto &h : rise_hist) if (h.second > 20) printf(" %llu:%llu", (unsigned long long)h.first, (unsigned long long)h.second);
 	printf("%c", 10);
+	printf("game draws: cycles %d..%d after the line start (window 168..1607), rows %d..%d (window 0..223)%c", ext_x0, ext_x1, ext_y0, ext_y1, 10);
 	printf("game frames %d, output frames %d, with a picture %d\n", ref_frames, out_frames, shown);
 	printf("%s: %d frames checked, %d differ\n", bad || !checked ? "FAIL" : "OK", checked, bad);
 	return bad || !checked || mism;
