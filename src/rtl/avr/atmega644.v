@@ -52,6 +52,7 @@ module atmega644 (
 	output [7:0]  ee_dout,
 	output        ee_cpu_wr,      // the CPU wrote the EEPROM at ee_cpu_addr
 	output [10:0] ee_cpu_addr,
+	output        wdt_reset,      // the watchdog resets the MCU (the board resets it: rst)
 
 	output        insn_start,
 	output [15:0] dbg_pc
@@ -87,7 +88,7 @@ avr_io_m644 io (
 	.spm(spm), .spm_z(spm_z), .spm_r(spm_r), .spm_fill(spm_fill), .spm_erase(spm_erase), .spm_write(spm_write),
 	.spm_busy(spm_busy), .ext_halt(spm_busy),
 	.ee_req(ee_req), .ee_we(ee_we), .ee_addr(ee_addr), .ee_din(ee_din), .ee_ack(ee_ack), .ee_dout(ee_dout),
-	.ee_cpu_wr(ee_cpu_wr), .ee_cpu_addr(ee_cpu_addr)
+	.ee_cpu_wr(ee_cpu_wr), .ee_cpu_addr(ee_cpu_addr), .wdt_reset(wdt_reset)
 );
 
 // data SRAM 4 KB: one write port, one read port (read address of the next cycle)

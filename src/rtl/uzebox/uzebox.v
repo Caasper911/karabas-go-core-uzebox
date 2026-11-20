@@ -101,11 +101,17 @@ wire [31:0] sr_rdata;
 // ---------------------------------------------------------------- reset and load
 reg game_loaded = 1'b0, rom_loaded = 1'b0, cpu_rst = 1'b1;
 wire bk_busy;
+wire wdt_reset;
+reg  [3:0] wdt_hold = 4'd0;               // a watchdog reset holds the CPU in reset 15 clocks
+wire wdt_rst = wdt_hold != 4'd0;
+always @(posedge clk)
+	if (wdt_reset) wdt_hold <= 4'd15;
+	else if (wdt_hold != 4'd0) wdt_hold <= wdt_hold - 4'd1;
 always @(posedge clk) begin
 	if (areset) begin game_loaded <= 1'b0; rom_loaded <= 1'b0; end
 	else if (ld_start) begin if (ld_raw) rom_loaded <= 1'b0; else game_loaded <= 1'b0; end
 	else if (ld_end) begin if (ld_raw) rom_loaded <= 1'b1; else game_loaded <= 1'b1; end
-	cpu_rst <= areset | reset | ld_active | bk_busy | (boot ? ~rom_loaded : ~game_loaded);
+	cpu_rst <= areset | reset | ld_active | bk_busy | wdt_rst | (boot ? ~rom_loaded : ~game_loaded);
 end
 assign running = ~cpu_rst;
 wire loading = ld_active;
@@ -113,9 +119,10 @@ wire loading = ld_active;
 // ---------------------------------------------------------------- the ATmega644
 wire [14:0] pm_addr, pm_addr_nx;
 wire [15:0] pm_rdata;
-wire [7:0]  porta, ddra, ddrb, portd, ddrd, ocr2a;   // (PORTA / PORTD are used by the SPI devices below)
+wire [7:0]  porta /* verilator public_flat */;
+wire [7:0]  ddra, ddrb, portd, ddrd, ocr2a;   // (PORTA / PORTD are used by the SPI devices below)
 wire [7:0]  pixel /* verilator public_flat */, portb /* verilator public_flat */;
-wire [1:0]  pad_data;
+wire [1:0]  pad_data /* verilator public_flat */;
 wire        sample;
 wire        spi_sck, spi_mosi, spi_start, spi_done;
 wire [7:0]  spi_tx;
@@ -139,13 +146,15 @@ atmega644 mcu (
 	.spm_fill(spm_fill), .spm_erase(spm_erase), .spm_write(spm_write), .spm_z(spm_z), .spm_r(spm_r),
 	.spm_busy(spm_busy),
 	.ee_req(ee_req), .ee_we(ee_we), .ee_addr(ee_addr[10:0]), .ee_din(ee_din), .ee_ack(ee_ack), .ee_dout(ee_dout),
-	.ee_cpu_wr(ee_cpu_wr), .ee_cpu_addr(ee_cpu_addr),
+	.ee_cpu_wr(ee_cpu_wr), .ee_cpu_addr(ee_cpu_addr), .wdt_reset(wdt_reset),
 	.insn_start(), .dbg_pc(dbg_pc)
 );
 
 uze_pm_sram pm (
-	.clk(clk), .loading(loading | cpu_rst),
-	.pm_addr_nx(pm_addr_nx), .pm_rdata(pm_rdata),
+	.clk(clk), .loading(loading),
+	// in reset the fetch address is the reset vector: the first word the CPU takes after its reset (26112011
+	// took the last address of the loader there: Bootloader5 ran the word after its reset vector)
+	.pm_addr_nx(cpu_rst ? (boot ? 15'h7800 : 15'h0000) : pm_addr_nx), .pm_rdata(pm_rdata),
 	.ld_wr(ld_wr), .ld_raw(ld_raw), .ld_addr(ld_addr), .ld_data(ld_data), .ld_busy(),
 	.spm_fill(spm_fill), .spm_erase(spm_erase), .spm_write(spm_write), .spm_z(spm_z), .spm_r(spm_r),
 	.spm_busy(spm_busy),

@@ -300,6 +300,8 @@ int main(int argc, char **argv) {
 			cpu_cycle();
 			int pc = top->dbg_pc, run = top->running;
 			if (run != prun) printf("cycle %llu: running %d (pc %04x)\n", (unsigned long long)cyc, run, pc);
+			static int trace_n = 0;
+			if (run && pc != prev && trace_n < 60) { printf("  pc %04x sp %04x\n", pc, top->rootp->uzebox__DOT__mcu__DOT__cpu__DOT__sp); trace_n++; }
 			if (run && prun && prev >= 0x7800 && pc < 0x7800) {
 				printf("cycle %llu: pc %04x -> %04x, SREG I %d\n", (unsigned long long)cyc, prev, pc,
 				       (int)(top->rootp->uzebox__DOT__mcu__DOT__cpu__DOT__sreg >> 7) & 1);
@@ -315,6 +317,22 @@ int main(int argc, char **argv) {
 			if (out_frames >= k_at[q] && out_frames < k_at[q] + k_n[q]) kb = (uint64_t)k_key[q] << 8;
 		top->kbd = kb;
 		cpu_cycle();
+		if (getenv("PADDBG")) {               // the pad read of the game: data bit at each rising clock after the latch
+			static int pa_prev = 0, nbits = 0, shown = 0; static uint32_t bits = 0;
+			int pa = top->rootp->uzebox__DOT__porta, pd = top->rootp->uzebox__DOT__pad_data & 1;
+			if ((pa_prev & 4) && !(pa & 4)) { nbits = 0; bits = 0; }
+			if (!(pa_prev & 8) && (pa & 8) && nbits < 16) { bits |= (uint32_t)pd << nbits; nbits++;
+				if (nbits == 16 && shown < 12 && out_frames >= 5) { printf("frame %d: pad read %04x (0 = pressed), kbd %llx\n", out_frames, bits, (unsigned long long)top->kbd); shown++; } }
+			static int lf = 0, cr = 0, last_report = -1;
+			if ((pa_prev & 4) && !(pa & 4)) lf++;
+			if (!(pa_prev & 8) && (pa & 8)) cr++;
+			if (out_frames != last_report && out_frames % 5 == 0) {
+				printf("frame %d: latch falls %d, clock rises %d, porta %02x ddra %02x, pc %04x\n", out_frames, lf, cr, pa,
+				       top->rootp->uzebox__DOT__mcu__DOT__io__DOT__gen[0x01], top->dbg_pc);
+				last_report = out_frames;
+			}
+			pa_prev = pa;
+		}
 		if (getenv("PCDBG") && top->running && (cyc % 200000) == 0) printf("cycle %llu: pc %04x, game frame %d, kbd %llx%c", (unsigned long long)cyc, top->dbg_pc, ref_frames, (unsigned long long)top->kbd, 10);
 	}
 	printf("audio: %llu changes\n", (unsigned long long)snd_changes);

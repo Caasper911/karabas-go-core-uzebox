@@ -77,7 +77,9 @@ module avr_io_m644 (
 	output reg        ee_ack,
 	output reg [7:0]  ee_dout,
 	output            ee_cpu_wr,    // the CPU wrote eeprom[ee_cpu_addr]
-	output     [10:0] ee_cpu_addr
+	output     [10:0] ee_cpu_addr,
+
+	output            wdt_reset     // the watchdog times out in system reset mode: reset the MCU
 );
 
 localparam A_PINA = 8'h00, A_DDRA = 8'h01, A_PORTA = 8'h02, A_PINB = 8'h03, A_DDRB = 8'h04, A_PORTB = 8'h05,
@@ -180,6 +182,10 @@ always @(posedge clk) begin
 end
 
 // ---------------------------------------------------------------- watchdog (Uzem model)
+// WDE + WDIE: the interrupt (as Uzem); WDE alone: a system reset after the time-out (the kernel's SoftReset
+// enables it to restart into the bootloader: START + SELECT + Y + B); Uzem has no reset.
+reg wdt_reset_r = 1'b0;
+assign wdt_reset = wdt_reset_r;
 reg  [19:0] wdt_acc;     // cycles since the last instruction end
 reg  [19:0] wdt_cnt /* verilator public_flat */;
 wire [7:0]  wdtcsr_e = (wr && io_addr == A_WDTCSR) ? io_wdata : wdtcsr;
@@ -187,7 +193,7 @@ wire [19:0] wdt_base = wdr ? 20'd0 : wdt_cnt;
 wire [20:0] wdt_sum  = {1'b0, wdt_base} + {1'b0, wdt_acc} + 21'd1;
 always @(posedge clk) begin
 	if (rst) begin
-		wdtcsr <= 8'd0; wdt_acc <= 20'd0; wdt_cnt <= 20'd0;
+		wdtcsr <= 8'd0; wdt_acc <= 20'd0; wdt_cnt <= 20'd0; wdt_reset_r <= 1'b0;
 	end else begin
 		if (wr && io_addr == A_WDTCSR) wdtcsr <= io_wdata;
 		if (irq_ack && irq_wdt) wdtcsr[7] <= 1'b0;
@@ -196,6 +202,8 @@ always @(posedge clk) begin
 			if (wdtcsr_e[3]) begin
 				if (wdt_sum >= {1'b0, WDT_CYCLES} && wdtcsr_e[6]) begin
 					wdtcsr[7] <= 1'b1; wdt_cnt <= 20'd0;
+				end else if (wdt_sum >= {1'b0, WDT_CYCLES}) begin
+					wdt_reset_r <= 1'b1;                      // system reset mode (WDE, no WDIE): SoftReset
 				end else
 					wdt_cnt <= wdt_sum[20] ? 20'hFFFFF : wdt_sum[19:0];
 			end else if (wdr) wdt_cnt <= 20'd0;
