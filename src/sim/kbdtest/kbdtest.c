@@ -4,7 +4,7 @@
  *
  * Row 2..: the typed keys (KeyboardPoll, shifted). Each key also goes out on the UART (115200, U2X).
  * Row 12..: the bytes that came in on the UART. Row 24: pad 1 (ReadJoypad, hex); row 25: the key count.
- * F1 sends "AT\r\n" (an ESP answers "OK").
+ * F1 sends "AT\r\n" (an ESP answers "OK"). Row 26: the size of the SPI RAM (SpiRamInitGetSize, x 64 KB).
  *
  * karabas-go-core-uzebox, GPL-3.0-or-later.
  */
@@ -15,6 +15,7 @@
 #include <avr/pgmspace.h>
 #include <uzebox.h>
 #include <keyboard.h>
+#include <spiram.h>
 
 #include "../tutorial/data/font-6x8-full.inc"
 
@@ -46,6 +47,9 @@ int main()
 	Print(1, 0, PSTR("KEYBOARD + UART TEST"));
 	Print(1, 11, PSTR("UART IN:"));
 	Print(1, 23, PSTR("PAD 1:"));
+	Print(1, 26, PSTR("SPI RAM"));
+	Print(16, 26, PSTR("X 64K"));
+	PrintInt(14, 26, SpiRamInitGetSize(), true);
 
 	UBRR0H = 0;
 	UBRR0L = 30;                     // 115200 with U2X

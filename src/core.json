@@ -1,7 +1,7 @@
 {
     "id": "uzebox",
     "name": "Uzebox",
-    "build": "26112019",
+    "build": "26112020",
     "visible": true,
     "type": "osd",
     "order": 41,
@@ -16,7 +16,7 @@
     "boards": {
         "minig": {
             "link": 2,
-            "build": "26112019",
+            "build": "26112020",
             "bitstream": "karabas_minig.bin"
         }
     },
@@ -82,6 +82,15 @@
                 "Port 2",
                 "Port 1",
                 "Off"
+            ],
+            "default": 0
+        },
+        {
+            "type": "S",
+            "name": "SPI RAM",
+            "options": [
+                "8 MB",
+                "128 KB"
             ],
             "default": 0
         }

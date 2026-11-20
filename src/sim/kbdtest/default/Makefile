@@ -45,7 +45,7 @@ HEX_EEPROM_FLAGS += --change-section-lma .eeprom=0 --no-change-warnings
 
 
 ## Objects that must be built in order to link
-OBJECTS = uzeboxVideoEngineCore.o uzeboxCore.o uzeboxSoundEngine.o uzeboxSoundEngineCore.o uzeboxVideoEngine.o keyboard.o $(GAME).o
+OBJECTS = uzeboxVideoEngineCore.o uzeboxCore.o uzeboxSoundEngine.o uzeboxSoundEngineCore.o uzeboxVideoEngine.o keyboard.o spiram.o $(GAME).o
 
 ## Objects explicitly added by the user
 LINKONLYOBJECTS = 
@@ -73,6 +73,9 @@ uzeboxVideoEngine.o: $(KERNEL_DIR)/uzeboxVideoEngine.c
 	$(CC) $(INCLUDES) $(CFLAGS) -c  $<
 
 ## Compile game sources
+spiram.o: $(KERNEL_DIR)/spiram.s
+	$(CC) $(INCLUDES) $(ASMFLAGS) -c  $<
+
 keyboard.o: $(KERNEL_DIR)/keyboard.c
 	$(CC) $(INCLUDES) $(CFLAGS) -c  $<
 

@@ -337,6 +337,7 @@ int main(int argc, char **argv) {
 	std::vector<std::pair<int, std::string>> type_at;   // -K frame:text (PS/2 set 2 bytes from that output frame)
 	int kb_mode = 0;                         // -m: OSD Keyboard 0 Auto, 1 Pad, 2 PS/2
 	int ms_port = 2;                         // -P: the SNES mouse port 0 off, 1, 2
+	int spiram_big = 1;                      // -R 0: SPI RAM 128 KB (default 8 MB)
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "-n") && i + 1 < argc) max_frames = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-p") && i + 1 < argc) png_prefix = argv[++i];
@@ -358,6 +359,7 @@ int main(int argc, char **argv) {
 		} else if (!strcmp(argv[i], "-L")) boot_loader = 1;      // Boot = Loader
 		else if (!strcmp(argv[i], "-m") && i + 1 < argc) kb_mode = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-P") && i + 1 < argc) ms_port = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "-R") && i + 1 < argc) spiram_big = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-M") && i + 1 < argc) {
 			ms_ev e = {0, 0, 0, 0, 0}; sscanf(argv[++i], "%d:%d:%d:%d:%d", &e.at, &e.n, &e.dx, &e.dy, &e.b); ms_evs.push_back(e);
 		}
@@ -384,7 +386,7 @@ int main(int argc, char **argv) {
 	top = new Vuzebox;
 	top->areset = 1; top->areset_sdr = 1; top->reset = 0; top->joy_l = 0; top->joy_r = 0; top->kbd = 0;
 	top->kb_mode = kb_mode; top->ps2_wr = 0; top->uart_rxd = 1;
-	top->ms_port = ms_port; top->ms_wr = 0; top->ms_x = 0; top->ms_y = 0; top->ms_b = 0;
+	top->spiram_big = spiram_big; top->ms_port = ms_port; top->ms_wr = 0; top->ms_x = 0; top->ms_y = 0; top->ms_b = 0;
 	top->sd_image = files[1].empty() ? 0 : 1; top->boot = boot_loader; top->img_flush = 0; top->sd_miso = 1;   // the image if one is given, else no card (MISO high)
 	top->clk = 0; top->clk_sdr = 0; top->clk_vid = 0;
 	for (int i = 0; i < 8; i++) cpu_cycle();

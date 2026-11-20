@@ -7,7 +7,7 @@
 // of an output frame R = C. So a frame is never shown while it is written (no tearing); the game runs at
 // 60.29 Hz, the output at 59.94 Hz: about every 3 s one game frame is not shown.
 //
-// The SPI RAM of the console (uze_spiram) lives at byte 0x100000 (128 KB), its single accesses go first.
+// The SPI RAM of the console (uze_spiram) lives at byte 0x800000 (up to 8 MB), its single accesses go first.
 // clk_sdr (71.875 MHz, uze_sdram, wishbone): the writer copies a picture line from the ring of
 // uze_video (rd_*, 4 bytes into one 32-bit write) when line_tg toggles; the reader fills a line buffer
 // (2 rows x 256 words) with 23 bursts of 8 words for a row the output asks for. The reader has priority.
@@ -28,10 +28,10 @@ module uze_fb (
 	output     [11:0] rd_addr,
 	input      [7:0]  rd_data,
 
-	// the SPI RAM (uze_spiram, CPU clock): a request per toggle, single accesses at byte 0x100000 +
+	// the SPI RAM (uze_spiram, CPU clock): a request per toggle, single accesses at byte 0x800000 +
 	input             sr_req_tg,
 	input             sr_we,
-	input      [14:0] sr_word,
+	input      [20:0] sr_word,
 	input      [1:0]  sr_lane,
 	input      [7:0]  sr_byte,
 	output reg        sr_ack_tg,
@@ -162,7 +162,7 @@ always @(posedge clk_sdr) begin
 				if (sr_pend) begin
 					own <= 2'd3; sr_pend <= 1'b0;
 					wb_cyc <= 1'b1; wb_stb <= 1'b1; wb_we <= sr_we; wb_cti <= 3'b111;
-					wb_adr <= {4'd0, 1'b1, 3'd0, sr_word};             // byte 0x100000 + 4 * word
+					wb_adr <= {1'b0, 1'b1, sr_word};                   // byte 0x800000 + 4 * word
 					wb_sel <= sr_we ? (4'b0001 << sr_lane) : 4'b1111;
 					wb_dat_o <= {4{sr_byte}};
 				end else if (r_pend || r_busy) begin

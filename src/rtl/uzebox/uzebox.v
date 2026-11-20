@@ -34,6 +34,7 @@ module uzebox #(
 	input      [1:0]  kb_mode,        // OSD Keyboard: 0 Auto, 1 Pad, 2 PS/2 (uze_pads)
 	input      [7:0]  ps2_code,       // PS/2 set 2 bytes of the USB keyboard
 	input             ps2_wr,
+	input             spiram_big,     // OSD SPI RAM: 1 8 MB (PSRAM), 0 128 KB (23LC1024)
 	input      [1:0]  ms_port,        // OSD Mouse: 0 Off, 1 port 1, 2 port 2 (SNES mouse, uze_pads)
 	input      [7:0]  ms_x,           // the USB mouse of the MCU
 	input      [7:0]  ms_y,
@@ -119,7 +120,7 @@ end
 
 // SPI RAM <-> SDRAM (uze_spiram <-> uze_fb)
 wire        sr_req_tg, sr_we, sr_ack_tg;
-wire [14:0] sr_word;
+wire [20:0] sr_word;
 wire [1:0]  sr_lane;
 wire [7:0]  sr_byte;
 wire [31:0] sr_rdata;
@@ -254,7 +255,7 @@ assign sd_sck = spi_sck;
 assign sd_mosi = spi_mosi;
 
 uze_spiram spiram (
-	.clk(clk), .rst(areset), .cs_n(cs_ram_n), .spi_start(spi_start), .spi_tx(spi_tx), .spi_done(spi_done),
+	.clk(clk), .rst(areset), .big(spiram_big), .cs_n(cs_ram_n), .spi_start(spi_start), .spi_tx(spi_tx), .spi_done(spi_done),
 	.rx(ram_rx), .late(),
 	.m_req_tg(sr_req_tg), .m_we(sr_we), .m_word(sr_word), .m_lane(sr_lane), .m_byte(sr_byte),
 	.m_ack_tg(sr_ack_tg), .m_rdata(sr_rdata)
