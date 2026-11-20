@@ -19,6 +19,7 @@
 module avr_core (
 	input             clk,
 	input             rst,
+	input      [14:0] reset_vec,     // word address of the reset (0, or the boot section: BOOTRST)
 	input             halt,          // freeze the CPU (EEPROM access, loader); IO keeps running
 
 	output reg [14:0] pm_addr,
@@ -40,9 +41,13 @@ module avr_core (
 
 	input             irq,
 	input      [5:0]  irq_vec,       // word address of the vector
+	input             ivsel,         // the vectors are in the boot section: 0x7800 + irq_vec
 	output            irq_ack,
 
 	output            wdr,           // WDR executed
+	output            spm,           // SPM executed (first cycle): spm_z = Z, spm_r = r1:r0
+	output     [15:0] spm_z,
+	output     [15:0] spm_r,
 	output            insn_start,    // first cycle of a program instruction (debug / test bench)
 	output            insn_end,      // last cycle of an instruction (incl. a skip) - Uzem's instruction tick
 	output     [15:0] dbg_pc
@@ -268,7 +273,7 @@ reg  [1:0]  skip_nx;
 reg  [1:0]  ihold_nx;
 reg  [15:0] kw_nx;
 reg  [15:0] dadr_nx;
-reg         ack_c, wdr_c;
+reg         ack_c, wdr_c, spm_c;
 
 wire [15:0] pc1 = pc + 16'd1;
 wire [15:0] pc2 = pc + 16'd2;
@@ -288,14 +293,14 @@ always @* begin
 	dm_ra = dm_raddr_q; dm_we_c = 1'b0; dm_wa = 12'd0; dm_wd = 8'd0;
 	ioa = 8'd0; io_rd_c = 1'b0; io_wr_c = 1'b0; io_wd_c = 8'd0; io_bm_c = 8'd0;
 	skip_nx = skip; ihold_nx = ihold; kw_nx = kw; dadr_nx = dadr;
-	ack_c = 1'b0; wdr_c = 1'b0;
+	ack_c = 1'b0; wdr_c = 1'b0; spm_c = 1'b0;
 
 	if (boot) begin
 		last = 1'b1;
 	end else if (in_irq) begin
 		// interrupt entry: push PC (low byte first), then fetch the vector
 		case (cyc)
-			2'd0: begin ack_c = 1'b1; sreg_nx[7] = 1'b0; push(pc[7:0]); kw_nx = {10'd0, irq_vec}; end
+			2'd0: begin ack_c = 1'b1; sreg_nx[7] = 1'b0; push(pc[7:0]); kw_nx = {1'b0, ivsel ? 9'h1E0 : 9'h000, irq_vec}; end
 			2'd1: begin push(pc[15:8]); jump_to(kw); end
 			default: last = 1'b1;
 		endcase
@@ -498,7 +503,8 @@ always @* begin
 				end
 			endcase
 		end
-		if (i_spm) begin
+		if (i_spm) begin                       // 4 cycles; the IO block does the operation (SPMCSR)
+			if (cyc == 2'd0) spm_c = 1'b1;
 			if (cyc == 2'd3) last = 1'b1;
 		end
 
@@ -537,6 +543,9 @@ assign io_wdata    = io_wd_c;
 assign io_bitmask  = io_bm_c;
 assign irq_ack     = ack_c & !halt;
 assign wdr         = wdr_c & !halt;
+assign spm         = spm_c & !halt;
+assign spm_z       = Z;
+assign spm_r       = {rf[1*8 +: 8], rf[0*8 +: 8]};
 assign insn_start  = !halt && !boot && cyc == 2'd0 && !squash && !take_irq;
 assign insn_end    = !halt && last && !in_irq && !boot && skip_nx == 2'd0;
 
@@ -544,9 +553,9 @@ assign insn_end    = !halt && last && !in_irq && !boot && skip_nx == 2'd0;
 integer i;
 always @(posedge clk) begin
 	if (rst) begin
-		pm_addr <= 15'd0;
+		pm_addr <= reset_vec;
 		pc <= 16'd0; ir <= 16'd0; cyc <= 2'd0; irq_slot <= 1'b0; skip <= 2'd0; ihold <= 2'd0;
-		boot <= 1'b1; sreg <= 8'd0; sp <= 16'd0; kw <= 16'd0; dadr <= 16'd0; dm_raddr_q <= 12'd0;
+		boot <= 1'b1; sreg <= 8'd0; sp <= 16'h10FF; kw <= 16'd0; dadr <= 16'd0; dm_raddr_q <= 12'd0;   // SP = RAMEND at reset (ATmega644; Bootloader5 relies on it)
 	end else if (!halt) begin
 		pm_addr <= pm_addr_nx;
 		dm_raddr_q <= dm_ra;

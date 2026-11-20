@@ -9,6 +9,8 @@
 // Uzem; variant V3: one pixel per two CPU cycles), x = 0..719, written into bank lc of a 4-line ring.
 // When a line of picture row y = vin - V_FIRST (0..223) of a frame whose start was seen ends, line_tg toggles with line_bank / line_row
 // (held until the next line): the frame buffer copies the bank, read through rd_* in its own clock.
+// freeze (the CPU waits for a sector of the SD image) stops the input side with the CPU: the frame on the way is
+// finished after the wait as if no time had passed (the frame buffer shows the last whole frame meanwhile).
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 
 module uze_video #(
@@ -17,6 +19,7 @@ module uze_video #(
 ) (
 	input             clk,            // CPU clock
 	input             rst,
+	input             freeze,         // the CPU is frozen: no input cycle passes
 	input      [7:0]  pixel,
 	input             sync,           // PB0
 
@@ -51,7 +54,7 @@ wire [8:0] row = vin - V_FIRST;
 
 initial begin line_tg = 1'b0; line_bank = 2'd0; line_row = 8'd0; end
 
-always @(posedge clk) begin
+always @(posedge clk) if (!freeze) begin
 	sync_d <= sync;
 	if (rise) per <= 12'd0;
 	else if (per != 12'hFFF) per <= per + 12'd1;
@@ -77,7 +80,7 @@ reg  [7:0]  lbuf [0:4095];
 wire [10:0] wx = hc - H_FIRST;
 wire        wen = hc >= H_FIRST && hc < H_FIRST + 1440 && !wx[0];
 always @(posedge clk)
-	if (wen) lbuf[{lc, wx[10:1]}] <= pixel;
+	if (wen && !freeze) lbuf[{lc, wx[10:1]}] <= pixel;
 always @(posedge rd_clk)
 	rd_data <= lbuf[rd_addr];
 

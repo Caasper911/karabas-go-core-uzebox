@@ -13,7 +13,8 @@
  Video: uzebox.v writes the game picture into a frame buffer in the SDRAM (triple buffered) and reads
  it out in standard timing (user 2026-11-20: an output locked to the game lost the monitors).
  OSD items (index = position in core.json): 0 Game (FL slot 0, .uze), 1 Reset (F12), 2 SD card (Real: the card of
- the board on SD_*, Image: kg_sd_emu on the image of item 3), 3 SD image (F slot 1).
+ the board on SD_*, Image: kg_sd_emu on the image of item 3), 3 SD image (F slot 1), 4 Bootloader (Off: the .uze of
+ item 0 at 0, On: Bootloader5 of the .kg at 0x7800; Reset after a change). The EEPROM is saved to <game>.sav (slot 2, kg_bk_ram).
 */
 
 module karabas_minig_top (
@@ -214,15 +215,16 @@ wire [1:0] ld_kind;
 wire [7:0] ld_slot, ld_data;
 wire [31:0] ld_addr;
 wire ld_start, ld_active, ld_end, ld_wr;
-wire [8*4-1:0] sw;
+wire [8*5-1:0] sw;
 wire [7:0] sdc_img_mounted;
 wire [63:0] sdc_img_size;
 wire sdc_busy, sdc_done, sdc_error, sdc_byte_in_strobe;
 wire [2:0] sdc_slot;
 wire [8:0] sdc_byte_addr;
 wire [7:0] sdc_byte_in_data, sdc_byte_out_data;
-wire hd_rd, hd_wr;
-wire [31:0] hd_lba;
+wire [7:0] sdc_rd, sdc_wr, img_flush, bk_kind, bk_result;
+wire [31:0] sdc_sector, bk_size;
+wire bk_mount, bk_flushed;
 wire dvi_only;
 wire ft_cs_n, ft_mosi, ft_spi_on;
 wire [15:0] dbg_addr;
@@ -237,10 +239,10 @@ wire [3:0] osd_py;
 wire [5:0] osd_pw;
 
 kg_mcu2 #(
-	.SW_N(4),
-	.SW_INIT(32'h00_01_00_00),   // 2 SD card: Image
+	.SW_N(5),
+	.SW_INIT(40'h00_00_01_00_00), // 2 SD card: Image, 4 Boot: Game
 	.CS_FILTER(3),
-	.CAPS(16'h0000),
+	.CAPS(16'h0002),             // bit 1: flush the backup RAM (EEPROM .sav) before another game / core
 	.ENABLE_OSD(1),
 	.ENABLE_IMG(1),              // the SD image (slot 1)
 	.IMG_OUT_LATENCY(3),
@@ -275,11 +277,11 @@ kg_mcu2 #(
 	.OSD_FG(osd_fg), .OSD_BG(osd_bg), .OSD_ALPHA(osd_alpha), .OSD_PX(osd_px), .OSD_PY(osd_py),
 	.OSD_PW(osd_pw), .OSD_PH(osd_ph), .OSD_PLACE(osd_place), .OSD_ZOOM(osd_zoom),
 
-	.SDC_IMG_MOUNTED(sdc_img_mounted), .SDC_IMG_SIZE(sdc_img_size), .SDC_RD({6'd0, hd_rd, 1'b0}), .SDC_WR({6'd0, hd_wr, 1'b0}),
-	.SDC_SECTOR(hd_lba), .SDC_BUSY(sdc_busy), .SDC_DONE(sdc_done), .SDC_ERROR(sdc_error), .SDC_SLOT(sdc_slot),
+	.SDC_IMG_MOUNTED(sdc_img_mounted), .SDC_IMG_SIZE(sdc_img_size), .SDC_RD(sdc_rd), .SDC_WR(sdc_wr),
+	.SDC_SECTOR(sdc_sector), .SDC_BUSY(sdc_busy), .SDC_DONE(sdc_done), .SDC_ERROR(sdc_error), .SDC_SLOT(sdc_slot),
 	.SDC_BYTE_IN_STROBE(sdc_byte_in_strobe), .SDC_BYTE_ADDR(sdc_byte_addr), .SDC_BYTE_IN_DATA(sdc_byte_in_data),
-	.SDC_BYTE_OUT_DATA(sdc_byte_out_data), .IMG_WP(), .IMG_PHYS_WR(), .IMG_PHYS(), .IMG_FLUSH(), .FDD_CHNG_WR(), .FDD_CHNG(),
-	.BK_MOUNT(1'b0), .BK_FLUSHED(1'b0), .BK_SLOT(3'd0), .BK_SIZE(32'd0), .BK_KIND(8'd0), .BK_RESULT(8'd0),
+	.SDC_BYTE_OUT_DATA(sdc_byte_out_data), .IMG_WP(), .IMG_PHYS_WR(), .IMG_PHYS(), .IMG_FLUSH(img_flush), .FDD_CHNG_WR(), .FDD_CHNG(),
+	.BK_MOUNT(bk_mount), .BK_FLUSHED(bk_flushed), .BK_SLOT(3'd2), .BK_SIZE(bk_size), .BK_KIND(bk_kind), .BK_RESULT(bk_result),
 	.FDD_CHNG_REQ(1'b0), .FDD_CHNG_DS(2'd0), .IMG_ACTIVE(),
 	.PORT_OUT_DATA(), .PORT_OUT_WR(), .PORT_OUT_READY(4'b1111), .PORT_IN_DATA(32'd0), .PORT_IN_WR(4'd0),
 	.PORT_CFG(128'd0), .PORT_IN_FULL(), .PORT_STAT(), .PORT_STAT_WR(),
@@ -297,7 +299,10 @@ assign FT_SPI_MOSI = ft_spi_on ? ft_mosi : 1'b1;
 
 wire sw_reset = sw[8];                 // OSD Reset (item index 1)
 wire sw_sd_image = sw[16];             // OSD SD card: 0 Real, 1 Image (item index 2)
+wire sw_boot = sw[32];                 // OSD Bootloader: 0 Off (the game of item 0), 1 On (Bootloader5) (item 4)
 wire ld_game = ld_kind == 2'd2 && ld_slot == 8'd0;
+wire ld_rom = ld_kind == 2'd0;          // the ROM of the .kg: Bootloader5 at 0xF000
+wire ld_any = ld_game | ld_rom;
 
 // ------------------------------------------------------------------ the console
 
@@ -318,15 +323,16 @@ wire [15:0] dbg_pc;
 
 uzebox console (
 	.clk(clk_cpu), .clk_sdr(clk_sdr), .areset_sdr(areset_sdr), .clk_vid(clk_vid), .areset(areset), .reset(sw_reset),
-	.ld_start(ld_start & ld_game), .ld_active(ld_active & ld_game), .ld_end(ld_end & ld_game),
-	.ld_wr(ld_wr & ld_game), .ld_addr(ld_addr), .ld_data(ld_data),
+	.boot(sw_boot), .ld_raw(ld_rom),
+	.ld_start(ld_start & ld_any), .ld_active(ld_active & ld_any), .ld_end(ld_end & ld_any),
+	.ld_wr(ld_wr & ld_any), .ld_addr(ld_addr), .ld_data(ld_data),
 	.joy_l(joy_l), .joy_r(joy_r), .kbd(kbd),
 	.sd_image(sw_sd_image), .sd_cs_n(SD_CS_N), .sd_sck(SD_CLK), .sd_mosi(SD_DI), .sd_miso(SD_DO),
-	.img_mounted(sdc_img_mounted[1]), .img_size(|sdc_img_size[63:32] ? 32'hFFFFFE00 : sdc_img_size[31:0]),
-	.hd_rd(hd_rd), .hd_wr(hd_wr), .hd_lba(hd_lba),
-	.hd_busy(sdc_busy && sdc_slot == 3'd1), .hd_done(sdc_done && sdc_slot == 3'd1), .hd_error(sdc_error),
-	.hd_byte_in_strobe(sdc_byte_in_strobe && sdc_slot == 3'd1), .hd_byte_addr(sdc_byte_addr),
-	.hd_byte_in_data(sdc_byte_in_data), .hd_byte_out_data(sdc_byte_out_data),
+	.sdc_img_mounted(sdc_img_mounted), .sdc_img_size(sdc_img_size), .sdc_rd(sdc_rd), .sdc_wr(sdc_wr),
+	.sdc_sector(sdc_sector), .sdc_busy(sdc_busy), .sdc_done(sdc_done), .sdc_error(sdc_error), .sdc_slot(sdc_slot),
+	.sdc_byte_in_strobe(sdc_byte_in_strobe), .sdc_byte_addr(sdc_byte_addr), .sdc_byte_in_data(sdc_byte_in_data),
+	.sdc_byte_out_data(sdc_byte_out_data), .img_flush(img_flush),
+	.bk_mount(bk_mount), .bk_flushed(bk_flushed), .bk_size(bk_size), .bk_kind(bk_kind), .bk_result(bk_result),
 	.sram_a(MA), .sram_dq_i(MD), .sram_dq_o(md_o), .sram_dq_oe(md_oe), .sram_we_n(MWR_N), .sram_oe_n(MRD_N),
 	.sdr_a(SDR_A), .sdr_ba(SDR_BA), .sdr_dq_i(SDR_DQ), .sdr_dq_o(sdr_dq_o), .sdr_dq_oe_n(sdr_dq_oe_n),
 	.sdr_dqm(SDR_DQM), .sdr_ras_n(SDR_RAS_N), .sdr_cas_n(SDR_CAS_N), .sdr_we_n(SDR_WE_N),

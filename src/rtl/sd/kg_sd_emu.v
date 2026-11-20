@@ -2,7 +2,9 @@
 // nextor_sd.v of core-msx, GPL-3.0). Changed: the SPI slave on the pins is replaced by the bytes of the SPI master of the
 // ATmega644 (avr_io_m644): its SCK is clk / 2 at fosc / 2, too fast to sample. An exchange: the master takes out_byte
 // (the card's byte, from its state before the exchange) and gives tx_in with xfer_in at the end of its transfer; the
-// card takes it the next clock. Everything else as the original.
+// card takes it the next clock. Also: CMD59 is taken, a read block ends with its real CRC16 (Bootloader5 turns the
+// CRC check on and checks it; the original sent FF FF), read-ahead of 8 sectors (below), rq_lba. Everything else as the
+// original.
 `timescale 1ns / 1ps
 // kg_sd_emu - an SD card on the SPI pins of OSCA's SD interface (spi_sch5), emulated on a hard disk image of the
 // file mounter of the MCU (img_sdc of karabas-go-modules) instead of a physical card.
@@ -43,6 +45,7 @@ module kg_sd_emu #(
 	output reg hd_rd = 1'b0,
 	output reg hd_wr = 1'b0,
 	output reg [31:0] hd_lba = 32'd0,
+	output wire [31:0] rq_lba,     // karabas (uzebox): the sector of the request to img_sdc (read-ahead requests too)
 	input wire hd_busy,           // img_sdc took the request
 	input wire hd_done,           // its end
 	input wire hd_error,          // with hd_done: the request failed (a read gave zero bytes): the sector is not cached
@@ -81,7 +84,7 @@ reg stale = 1'b0;
 
 // port a: the card (the sector of hd_lba, buf_addr), port b: img_sdc (the sector of the request, rq_line: a read
 // sector in, a written one out). The bytes of a stale read are not taken.
-reg [8:0] buf_addr = 9'd0;    // the byte of the card (read: the next one out, write: the next one in)
+reg [8:0] buf_addr /* verilator public_flat */ = 9'd0;    // the byte of the card (read: the next one out, write: the next one in)
 wire [7:0] buf_q;
 reg buf_we = 1'b0;
 reg [7:0] buf_wd = 8'h00;
@@ -115,6 +118,22 @@ always @(posedge clk)
 reg lookup = 1'b0;            // a read of hd_lba: the cache first, then img_sdc
 reg [1:0] look_cnt = 2'd0;
 reg inval = 1'b0;             // a new image came while a request was out: its sector is not cached
+assign rq_lba = rq_tag;
+
+// karabas (uzebox): read-ahead. A sector of the image takes 5..40 ms through the MCU; the kernel's SD code (bootlib)
+// waits for the data token ~10 ms only (SD 03 in streaming programs). After a read of sector L the sectors
+// L+1 .. L+PF_N are read into the cache in the background, one at a time while img_sdc and the card are idle,
+// never into the line the card uses: a sequential read finds its next sector there at once.
+localparam [3:0] PF_N = 4'd8;
+reg [31:0] pf_lba = 32'd0;
+reg [3:0]  pf_cnt = 4'd0;
+reg        pf_req = 1'b0;     // the request out is a read-ahead
+reg [1:0]  pf_look = 2'd0;
+reg        pf_hit = 1'b0;
+wire [4:0] pf_line = CACHE ? line_of(pf_lba) : 5'd0;
+always @(posedge clk)
+	pf_hit <= valid[pf_line] && tag[pf_line] == pf_lba;
+
 
 // ------------------------------------------------------------------ the card (nextor_sd.v)
 
@@ -122,7 +141,7 @@ localparam S_IDLE = 4'd0, S_CMD = 4'd1, S_RESP = 4'd2, S_RD_WAIT = 4'd3, S_RD_DA
 	S_RD_CRC = 4'd5, S_WR_TOKEN = 4'd6, S_WR_DATA = 4'd7, S_WR_CRC = 4'd8, S_WR_RESP = 4'd9,
 	S_WR_BUSY = 4'd10, S_NCR = 4'd11;
 
-reg [3:0] state = S_IDLE;
+reg [3:0] state /* verilator public_flat */ = S_IDLE;
 reg [5:0] cmd = 6'd0;
 reg [31:0] arg = 32'd0;
 reg [2:0] cnt = 3'd0;         // the bytes of a command
@@ -146,7 +165,8 @@ wire [21:0] c_size = size[31:19] == 13'd0 ? 22'd0 : { 9'd0, size[31:19] } - 22'd
 
 // (a continuous assignment: an always @* of cmd would not run in a simulation while cmd keeps its initial value, CMD0)
 wire cmd_bad = !(cmd == 6'd0 || cmd == 6'd1 || cmd == 6'd8 || cmd == 6'd9 || cmd == 6'd10 || cmd == 6'd12 || cmd == 6'd16 ||
-	cmd == 6'd17 || cmd == 6'd18 || cmd == 6'd24 || cmd == 6'd25 || cmd == 6'd55 || cmd == 6'd58);
+	cmd == 6'd17 || cmd == 6'd18 || cmd == 6'd24 || cmd == 6'd25 || cmd == 6'd55 || cmd == 6'd58 ||
+	cmd == 6'd59);   // karabas (uzebox): CMD59 CRC_ON_OFF (Bootloader5 turns the CRC check on)
 wire [7:0] r1 = { 5'd0, (acmd ? 1'b0 : cmd_bad), 1'b0, idle };
 
 // the bytes of a response after R1 (ridx 1..): R7, OCR, the CSD / CID with their token and CRC
@@ -220,6 +240,21 @@ always @* begin
 	endcase
 end
 
+// karabas (uzebox): the CRC16 (CCITT, 0x1021, from 0) of the data block being read, sent after it
+reg [15:0] rcrc = 16'd0;
+function [15:0] crc16_byte;
+	input [15:0] c;
+	input [7:0]  d;
+	integer i;
+	reg [15:0] x;
+	begin
+		x = c ^ {d, 8'd0};
+		for (i = 0; i < 8; i = i + 1)
+			x = x[15] ? {x[14:0], 1'b0} ^ 16'h1021 : {x[14:0], 1'b0};
+		crc16_byte = x;
+	end
+endfunction
+
 // the byte the card gives in the exchange
 reg [7:0] out_r;
 always @* begin
@@ -227,6 +262,7 @@ always @* begin
 		S_RESP: out_r = ridx == 5'd0 ? r1 : resp;
 		S_RD_WAIT: out_r = ready ? 8'hFE : 8'hFF;
 		S_RD_DATA: out_r = buf_q;
+		S_RD_CRC: out_r = crc1 ? rcrc[7:0] : rcrc[15:8];   // karabas (uzebox): the real CRC16 (Bootloader5 checks it)
 		S_WR_RESP: out_r = 8'h05;
 		S_WR_BUSY: out_r = ready ? 8'hFF : 8'h00;
 		default: out_r = 8'hFF;
@@ -259,8 +295,13 @@ always @(posedge clk) begin
 	end
 	if (hd_done) begin
 		pending <= 1'b0;
-		if (!stale)
+		pf_req <= 1'b0;
+		if (!stale && !pf_req)
 			ready <= 1'b1;
+		if (pf_req && want && !want_wr && rq_tag == hd_lba && !hd_error && !inval) begin
+			ready <= 1'b1;           // the card waits for the sector the read-ahead brought
+			want <= 1'b0;
+		end
 		if (!stale && !inval && !hd_error) begin
 			// the sector of the request is in its line now (read from the image, or written to it)
 			tag_we <= 1'b1;
@@ -280,8 +321,25 @@ always @(posedge clk) begin
 		valid[card_line] <= 1'b0;   // the line gets the sector of the request
 		if (want_wr) hd_wr <= 1'b1; else hd_rd <= 1'b1;
 	end
+	if (CACHE != 0 && !want && !pending && !lookup && pf_cnt != 4'd0) begin
+		pf_look <= pf_look + 2'd1;
+		if (pf_look == 2'd2) begin
+			pf_look <= 2'd0;
+			pf_lba <= pf_lba + 32'd1;
+			pf_cnt <= pf_cnt - 4'd1;
+			if (!pf_hit && pf_line != card_line && pf_lba < {9'd0, size[31:9]}) begin
+				pending <= 1'b1;
+				pf_req <= 1'b1;
+				rq_line <= pf_line;
+				rq_tag <= pf_lba;
+				valid[pf_line] <= 1'b0;
+				hd_rd <= 1'b1;
+			end
+		end
+	end
 	if (img_mounted) begin
 		valid <= 32'd0;
+		pf_cnt <= 4'd0;
 		if (pending)
 			inval <= 1'b1;
 	end
@@ -294,6 +352,7 @@ always @(posedge clk) begin
 			stale <= 1'b1;
 		want <= 1'b0;
 		lookup <= 1'b0;
+		pf_cnt <= 4'd0;
 	end else if (xfer) begin
 		if (xfer_cs_n) begin
 			// deselected: the card drops what it was doing
@@ -307,6 +366,7 @@ always @(posedge clk) begin
 				if (state == S_RD_WAIT && sent == 8'hFE && !is_cmd) begin
 					// the token went out (in this exchange; ready may have come after the byte was taken): the data from byte 0 (buf_q)
 					state <= S_RD_DATA;
+					rcrc <= 16'd0;
 				end else if (is_cmd) begin
 					if (state == S_RD_WAIT) begin
 						// CMD12 in a multiple block read: the block on its way is not wanted
@@ -349,6 +409,7 @@ always @(posedge clk) begin
 						hd_lba <= arg;
 						multi <= cmd == 6'd18;
 						lookup <= 1'b1;
+						pf_lba <= arg + 32'd1; pf_cnt <= PF_N; pf_look <= 2'd0;
 						look_cnt <= 2'd0;
 						ready <= 1'b0;
 						buf_addr <= 9'd0;
@@ -364,6 +425,7 @@ always @(posedge clk) begin
 			end
 			S_RD_DATA: begin
 				buf_addr <= buf_addr + 9'd1;
+				rcrc <= crc16_byte(rcrc, sent);
 				if (buf_addr == 9'd511) begin
 					// the last byte went out: the CRC
 					crc1 <= 1'b0;
@@ -376,6 +438,7 @@ always @(posedge clk) begin
 					if (multi) begin
 						hd_lba <= hd_lba + 32'd1;
 						lookup <= 1'b1;
+						pf_lba <= hd_lba + 32'd2; pf_cnt <= PF_N; pf_look <= 2'd0;
 						look_cnt <= 2'd0;
 						ready <= 1'b0;
 						buf_addr <= 9'd0;

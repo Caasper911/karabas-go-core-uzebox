@@ -1,17 +1,23 @@
 {
     "id": "uzebox",
     "name": "Uzebox",
-    "build": "26112009",
+    "build": "26112016",
     "visible": true,
     "type": "osd",
     "order": 41,
     "eeprom_bank": 255,
+    "spi_freq": 32,
     "rtc_mode": 0,
-    "roms": [],
+    "roms": [
+        {
+            "filename": "roms/uzeboot.bin",
+            "address": 61440
+        }
+    ],
     "boards": {
         "minig": {
             "link": 2,
-            "build": "26112009",
+            "build": "26112016",
             "bitstream": "karabas_minig.bin"
         }
     },
@@ -50,6 +56,15 @@
                 "item": "sd",
                 "value": "Image"
             }
+        },
+        {
+            "type": "S",
+            "name": "Bootloader",
+            "options": [
+                "Off",
+                "On"
+            ],
+            "default": 0
         }
     ]
 }
