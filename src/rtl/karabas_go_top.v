@@ -8,20 +8,20 @@
  on V_CLK (clk_vid, 720 x 480p), the FT812 off that bus (FT_OE_N = 1), no HDMI. The floppy connector is not
  used (its outputs 0).
  uzebox.v (ATmega644 with its program memory in the board
- SRAM, the .uze loader, SNES pads, 720 x 480 video, sound) and the board: PLL, MCU link v2, OSD, HDMI,
+ SRAM, the .uze loader, SNES pads, 720 x 480 / 576 video, sound) and the board: PLL, MCU link v2, OSD, HDMI,
  PCM5102, the LED matrix level meters.
 
  Clocks: PLL 1 (VCO 575 MHz = 50 / 2 * 23): clk_cpu 28.75 MHz (the Uzebox has 28.636: 0.4 % fast, a game
  frame of 60.29 Hz; also the MCU link), clk_sdr 71.875 MHz (the frame buffer SDRAM; SDR_CLK from the
  225 degree output through an ODDR2), 25 MHz for PLL 2 (VCO 675 MHz = 25 * 27): clk_vid 27 MHz (CEA
- 720 x 480p 59.94 Hz: the OSD, HDMI), clk_hdmi / clk_hdmi_n 135 MHz; FT_CLK_OUT = clk_cpu / 4 (7.2 MHz).
+ 720 x 480p 59.94 Hz or 720 x 576p 50 Hz: the OSD, HDMI), clk_hdmi / clk_hdmi_n 135 MHz; FT_CLK_OUT = clk_cpu / 4 (7.2 MHz).
  Video: uzebox.v writes the game picture into a frame buffer in the SDRAM (triple buffered) and reads
  it out in standard timing (user 2026-11-20: an output locked to the game lost the monitors).
  OSD items (index = position in core.json): 0 Game (FL slot 0, .uze), 1 Reset (F12), 2 SD card (Real: the card of
  the board on SD_*, Image: kg_sd_emu on the image of item 3), 3 SD image (F slot 1), 4 Bootloader (Off: the .uze of
  item 0 at 0, On: Bootloader5 of the .kg at 0x7800; Reset after a change), 5 Keyboard (Auto / Pad / PS/2: the USB keyboard
  as pad 1 or as the Uzebox keyboard in port 2), 6 Mouse (Port 2 / Port 1 / Off: the USB mouse as the SNES mouse), 7 SPI RAM
- (8 MB / 128 KB). The EEPROM is saved to <game>.sav (slot 2, kg_bk_ram). The ESP8266 is on USART0 (UART_*).
+ (8 MB / 128 KB), 8 Video (480p 60Hz / 576p 50Hz: the output timing, both CEA). The EEPROM is saved to <game>.sav (slot 2, kg_bk_ram). The ESP8266 is on USART0 (UART_*).
 */
 
 module karabas_go_top (
@@ -239,7 +239,7 @@ wire [1:0] ld_kind;
 wire [7:0] ld_slot, ld_data;
 wire [31:0] ld_addr;
 wire ld_start, ld_active, ld_end, ld_wr;
-wire [8*8-1:0] sw;
+wire [9*8-1:0] sw;
 wire [7:0] ms_x, ms_y, ms_b;
 wire ms_wr;
 wire [7:0] ps2_code;
@@ -267,8 +267,8 @@ wire [3:0] osd_py;
 wire [5:0] osd_pw;
 
 kg_mcu2 #(
-	.SW_N(8),
-	.SW_INIT(64'h00_00_00_00_00_01_00_00), // 2 SD card: Image, 4 Boot: Game, 5 Keyboard: Auto, 6 Mouse: Port 2, 7 SPI RAM: 8 MB
+	.SW_N(9),
+	.SW_INIT(72'h00_00_00_00_00_00_01_00_00), // 2 SD card: Image, 4 Boot: Game, 5 Keyboard: Auto, 6 Mouse: Port 2, 7 SPI RAM: 8 MB, 8 Video: 480p
 	.CS_FILTER(3),
 	.CAPS(16'h0002),             // bit 1: flush the backup RAM (EEPROM .sav) before another game / core
 	.ENABLE_OSD(1),
@@ -331,6 +331,7 @@ wire sw_boot = sw[32];                 // OSD Bootloader: 0 Off (the game of ite
 wire [1:0] sw_kb = sw[41:40];          // OSD Keyboard: 0 Auto, 1 Pad, 2 PS/2 (item 5)
 wire [1:0] sw_ms = sw[49:48];          // OSD Mouse: 0 Port 2, 1 Port 1, 2 Off (item 6)
 wire sw_spiram_big = ~sw[56];          // OSD SPI RAM: 0 8 MB, 1 128 KB (item 7)
+wire sw_576 = sw[64];                  // OSD Video: 0 720x480p 59.94 Hz, 1 720x576p 50 Hz (item 8)
 wire ld_game = ld_kind == 2'd2 && ld_slot == 8'd0;
 wire ld_rom = ld_kind == 2'd0;          // the ROM of the .kg: Bootloader5 at 0xF000
 wire ld_any = ld_game | ld_rom;
@@ -357,7 +358,7 @@ uzebox console (
 	.boot(sw_boot), .ld_raw(ld_rom),
 	.ld_start(ld_start & ld_any), .ld_active(ld_active & ld_any), .ld_end(ld_end & ld_any),
 	.ld_wr(ld_wr & ld_any), .ld_addr(ld_addr), .ld_data(ld_data),
-	.joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .kb_mode(sw_kb), .spiram_big(sw_spiram_big), .ms_port(sw_ms == 2'd0 ? 2'd2 : sw_ms == 2'd1 ? 2'd1 : 2'd0), .ms_x(ms_x), .ms_y(ms_y), .ms_b(ms_b), .ms_wr(ms_wr), .uart_rxd(UART_RX), .uart_txd(uart_txd), .uart_cts(uart_cts), .ps2_code(ps2_code), .ps2_wr(ps2_wr && !ps2_kind),
+	.joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .kb_mode(sw_kb), .spiram_big(sw_spiram_big), .vid_576(sw_576), .ms_port(sw_ms == 2'd0 ? 2'd2 : sw_ms == 2'd1 ? 2'd1 : 2'd0), .ms_x(ms_x), .ms_y(ms_y), .ms_b(ms_b), .ms_wr(ms_wr), .uart_rxd(UART_RX), .uart_txd(uart_txd), .uart_cts(uart_cts), .ps2_code(ps2_code), .ps2_wr(ps2_wr && !ps2_kind),
 	.sd_image(sw_sd_image), .sd_cs_n(SD_CS_N), .sd_sck(SD_CLK), .sd_mosi(SD_DI), .sd_miso(SD_DO),
 	.sdc_img_mounted(sdc_img_mounted), .sdc_img_size(sdc_img_size), .sdc_rd(sdc_rd), .sdc_wr(sdc_wr),
 	.sdc_sector(sdc_sector), .sdc_busy(sdc_busy), .sdc_done(sdc_done), .sdc_error(sdc_error), .sdc_slot(sdc_slot),
