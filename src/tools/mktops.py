@@ -10,7 +10,7 @@ replacement must match once, else it stops).
 Mini (before rev.G): MCU_SCK not on a clock pin (no BUFG), 4 MCU_IO, sigma-delta audio on
   AUDIO_L / AUDIO_R instead of the PCM5102, FT_RESET, the ESP pins (ESP_RESET_N / ESP_BOOT_N left Z: the
   Uzenet reset PD3 / power PA6 of the programs is not wired).
-Go: VGA 8:8:8 with V_CLK (clk_vid, 720 x 480p) instead of HDMI, the FT812 off the video bus (FT_OE_N = 1), the
+Go: VGA 8:8:8 with V_CLK (clk_vid: 720 x 480p / 576p, 800 x 600) instead of HDMI, the FT812 off the video bus (FT_OE_N = 1), the
   MCU link on MCU_SPI_*, DAC_LRCK / DAC_MUTE, the floppy connector unused (its outputs 0), the SDRAM
   /CS hard wired (FLASH_CS_N = 1: the flash chip), no FT_CLK_OUT, no ADC.
 Both: the SAM2695 synth is not used: held in reset (MIDI_RESET_N = 0, MIDI_CLK = 0).
@@ -235,7 +235,7 @@ def go(s):
     s = sub(s, HEADER_G, " Uzebox core for Karabas Go (VGA, PCM5102). Made by tools/mktops.py from\n"
             " karabas_minig_top.v (do not edit: change that one and run it): the same except the pins, the MCU\n"
             " link (MCU_SCK not on a clock pin) and the video: 24 bit RGB to the VGA DAC with its pixel clock\n"
-            " on V_CLK (clk_vid, 720 x 480p), the FT812 off that bus (FT_OE_N = 1), no HDMI. The floppy connector is not\n"
+            " on V_CLK (clk_vid: 720 x 480p / 576p, 800 x 600), the FT812 off that bus (FT_OE_N = 1), no HDMI. The floppy connector is not\n"
             " used (its outputs 0).\n"
             " uzebox.v", "header")
     s = ports(s, GO_PORTS)
@@ -266,13 +266,13 @@ def go(s):
     s = cut(s, "// the sample to clk_vid: it changes once per game line", "// ------------------------------------------------------------------ debug",
             """// ------------------------------------------------------------------ VGA
 
-// 720 x 480p at 59.94 Hz: negative syncs as on HDMI, black outside de (the DAC has no blank input); the
-// OSD output is registered with them
+// syncs as on HDMI (480p / 576p negative, 800 x 600 positive), black outside de (the DAC has no blank
+// input); the OSD output is registered with them
 reg vga_hs = 1'b1, vga_vs = 1'b1;
 reg [23:0] vga_rgb = 24'd0;
 always @(posedge clk_vid) begin
-	vga_hs <= ~osd_hs;
-	vga_vs <= ~osd_vs;
+	vga_hs <= osd_hs ^ ~vid_pos;
+	vga_vs <= osd_vs ^ ~vid_pos;
 	vga_rgb <= osd_de ? osd_rgb : 24'd0;
 end
 assign VGA_R = vga_rgb[23:16];
@@ -295,11 +295,11 @@ def ucf(board):
     timing = g[g.index(MARK):]
     timing = sub(timing, "karabas_minig_top.v", "karabas_%s_top.v" % board, "ucf top")
     if board == "mini":
-        timing = sub(timing, "vpll_clk<1> / <2> 135 MHz HDMI.\n",
-                     "vpll_clk<1> / <2> 135 MHz HDMI.\n# MCU_SCK is not on a clock pin before rev.G.\n", "ucf mini")
+        timing = sub(timing, "pll_clk<5> 200 MHz.\n",
+                     "pll_clk<5> 200 MHz.\n# MCU_SCK is not on a clock pin before rev.G.\n", "ucf mini")
     if board == "go":
-        timing = sub(timing, "vpll_clk<1> / <2> 135 MHz HDMI.\n",
-                     "vpll_clk<1> / <2>: not used on Go (no HDMI).\n# V_CLK = clk_vid (an ODDR2). MCU_SCK not on a clock pin.\n",
+        timing = sub(timing, "pll_clk<5> 200 MHz.\n",
+                     "pll_clk<5> 200 MHz (clk_hdmi: not used on Go, no HDMI).\n# V_CLK = clk_vid (an ODDR2). MCU_SCK not on a clock pin.\n",
                      "ucf go hdmi")
     path = os.path.join(SRC, "karabas_%s.ucf" % board)
     pins = open(path).read()

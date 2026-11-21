@@ -1,19 +1,26 @@
-// uze_fb.v - the frame buffer of the Uzebox picture in the board SDRAM and the 720 x 480p output
-// (user 2026-11-20: a frame buffer instead of an output locked to the game, standard CEA timing).
+// uze_fb.v - the frame buffer of the Uzebox picture in the board SDRAM and the 720 x 480p / 576p / 800 x 600
+// output (user 2026-11-20: a frame buffer instead of an output locked to the game, standard timing;
+// 576p 50 Hz and 800 x 600 60 Hz added 2026-11-21).
 //
 // Picture: 720 x 224 bytes (3:3:2), row y = one SDRAM row (1024 bytes): byte address
 // { frame[1:0], y[7:0], x[9:0] }. Three frames (triple buffering): W is written, C is the last complete
 // one, R is shown; at the end of row 223 C = W and W takes the frame that is neither C nor R; at the start
 // of an output frame R = C. So a frame is never shown while it is written (no tearing); the game runs at
-// 60.29 Hz, the output at 59.94 Hz: about every 3 s one game frame is not shown.
+// 59.92 Hz (CPU 28.571 MHz): at 59.94 Hz a game frame is shown twice about every 50 s, at 60.32 Hz every
+// 2.5 s, at 50 Hz 10 game frames a second are not shown.
 //
 // The SPI RAM of the console (uze_spiram) lives at byte 0x800000 (up to 8 MB), its single accesses go first.
-// clk_sdr (71.875 MHz, uze_sdram, wishbone): the writer copies a picture line from the ring of
+// clk_sdr (72.727 MHz, uze_sdram, wishbone): the writer copies a picture line from the ring of
 // uze_video (rd_*, 4 bytes into one 32-bit write) when line_tg toggles; the reader fills a line buffer
 // (2 rows x 256 words) with 23 bursts of 8 words for a row the output asks for. The reader has priority.
-// clk_vid (27 MHz): CEA-861 720 x 480p 59.94 Hz: 858 x 525, active 720 x 480 from (0, 0), hsync
-// 736..797, vsync lines 489..494, hs / vs / de high active. Picture rows 0..223 on the active lines
-// 16..463, each twice; black around and before the first complete frame.
+// clk_vid, hs / vs / de high active (sync_pos: the polarity the screen wants), active area from (0, 0):
+//   vmode 0: CEA-861 720 x 480p 59.94 Hz (VIC 2/3), 27 MHz: 858 x 525, hsync 736..797, vsync lines
+//            489..494, negative syncs; picture rows 0..223 on the active lines 16..463, each twice;
+//   vmode 1: CEA-861 720 x 576p 50 Hz (VIC 17/18), 27 MHz: 864 x 625, hsync 732..795, vsync lines 581..585,
+//            negative; picture on the active lines 64..511;
+//   vmode 2: VESA 800 x 600 60.32 Hz, 40 MHz (the board switches clk_vid): 1056 x 628, hsync 840..967, vsync
+//            lines 601..604, positive syncs; picture at x 40..759 on the active lines 76..523.
+// vmode (any clock) is taken at the end of an output frame. Black around and before the first complete frame.
 // karabas-go-core-uzebox, GPL-3.0-or-later.
 
 module uze_fb (
@@ -50,31 +57,45 @@ module uze_fb (
 
 	// output
 	input             clk_vid,
+	input      [1:0]  vmode,          // 0 720 x 480p 59.94 Hz, 1 720 x 576p 50 Hz, 2 800 x 600 60 Hz (40 MHz)
 	output reg [23:0] rgb,
 	output reg        hs,
 	output reg        vs,
-	output reg        de
+	output reg        de,
+	output reg        sync_pos        // 1: the screen wants positive syncs (800 x 600)
 );
 
 
 // ---------------------------------------------------------------- video timing (clk_vid)
-localparam H_TOTAL = 858, H_ACT = 720, HS_B = 736, HS_E = 798;
-localparam V_TOTAL = 525, V_ACT = 480, VS_B = 489, VS_E = 495;
-localparam V_PIC = 16;                       // first active line of picture row 0
+reg  [1:0] m_s0 = 2'd0, m_s1 = 2'd0, m_s2 = 2'd0;
+reg  [1:0] m = 2'd0;                         // the mode of this output frame
+wire       m5 = m == 2'd1, m8 = m == 2'd2;
+wire [10:0] H_TOTAL = m8 ? 11'd1056 : m5 ? 11'd864 : 11'd858;
+wire [10:0] H_ACT   = m8 ? 11'd800 : 11'd720;
+wire [10:0] HS_B    = m8 ? 11'd840 : m5 ? 11'd732 : 11'd736;
+wire [10:0] HS_E    = m8 ? 11'd968 : m5 ? 11'd796 : 11'd798;
+wire [10:0] H_PIC   = m8 ? 11'd40 : 11'd0;   // first pixel of the picture
+wire [9:0]  V_TOTAL = m8 ? 10'd628 : m5 ? 10'd625 : 10'd525;
+wire [9:0]  V_ACT   = m8 ? 10'd600 : m5 ? 10'd576 : 10'd480;
+wire [9:0]  VS_B    = m8 ? 10'd601 : m5 ? 10'd581 : 10'd489;
+wire [9:0]  VS_E    = m8 ? 10'd605 : m5 ? 10'd586 : 10'd495;
+wire [9:0]  V_PIC   = m8 ? 10'd76 : m5 ? 10'd64 : 10'd16;   // first active line of picture row 0
 
-reg [9:0] hc = 10'd0;
+reg [10:0] hc = 11'd0;
 reg [9:0] vc = 10'd0;
-wire      hend = hc == H_TOTAL - 1;
+wire      hend = hc == H_TOTAL - 11'd1;
 // requests to the SDRAM side: the frame start (R = C) and a row fetch (row, buffer bank = row[0])
 reg       vfs_tg = 1'b0;
 reg       rq_tg = 1'b0;
 reg [7:0] rq_row = 8'd0;
-wire [9:0] pl = vc - (V_PIC - 2);            // a row is fetched during the two lines before it
+wire [9:0] pl = vc - (V_PIC - 10'd2);        // a row is fetched during the two lines before it
 always @(posedge clk_vid) begin
-	hc <= hend ? 10'd0 : hc + 10'd1;
-	if (hend) vc <= (vc == V_TOTAL - 1) ? 10'd0 : vc + 10'd1;
-	if (hc == 10'd0 && vc == 10'd0) vfs_tg <= ~vfs_tg;
-	if (hc == 10'd0 && vc >= V_PIC - 2 && vc < V_PIC - 2 + 448 && !pl[0]) begin
+	m_s0 <= vmode; m_s1 <= m_s0; m_s2 <= m_s1;
+	hc <= hend ? 11'd0 : hc + 11'd1;
+	if (hend) vc <= (vc == V_TOTAL - 10'd1) ? 10'd0 : vc + 10'd1;
+	if (hend && vc == V_TOTAL - 10'd1 && m_s2 == m_s1 && m_s2 != 2'd3) m <= m_s2;
+	if (hc == 11'd0 && vc == 10'd0) vfs_tg <= ~vfs_tg;
+	if (hc == 11'd0 && vc >= V_PIC - 10'd2 && vc < V_PIC + 10'd446 && !pl[0]) begin
 		rq_tg <= ~rq_tg;
 		rq_row <= pl[8:1];
 	end
@@ -208,18 +229,19 @@ end
 reg  [2:0] rv_s = 3'd0;
 always @(posedge clk_vid) rv_s <= {rv_s[1:0], r_valid};
 wire [9:0] prow2 = vc - V_PIC;
-wire       pic = vc >= V_PIC && vc < V_PIC + 448 && hc < H_ACT;
+wire [10:0] px = hc - H_PIC;                 // the picture x (0..719 inside it)
+wire       pic = vc >= V_PIC && vc < V_PIC + 10'd448 && hc >= H_PIC && px < 11'd720;
 reg  [31:0] lw;
 reg  [1:0] bsel;
 reg        hs1, vs1, de1, pic1;
 always @(posedge clk_vid) begin
-	lw <= lb[{prow2[1], hc[9:2]}];                    // row y = prow2 >> 1, buffer bank y[0] = prow2[1]
-	bsel <= hc[1:0];
+	lw <= lb[{prow2[1], px[9:2]}];                    // row y = prow2 >> 1, buffer bank y[0] = prow2[1]
+	bsel <= px[1:0];
 	hs1 <= hc >= HS_B && hc < HS_E;
 	vs1 <= vc >= VS_B && vc < VS_E;
 	de1 <= hc < H_ACT && vc < V_ACT;
 	pic1 <= pic && rv_s[2];
-	hs <= hs1; vs <= vs1; de <= de1;
+	hs <= hs1; vs <= vs1; de <= de1; sync_pos <= m8;
 	if (pic1) begin
 		case (bsel)
 			2'd0: rgb <= rgb332(lw[7:0]);

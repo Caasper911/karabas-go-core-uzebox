@@ -6,20 +6,23 @@
  tools/mktops.py from karabas_minig_top.v (do not edit: change that one and run it): the same
  except the pins, the MCU link (MCU_SCK not on a clock pin) and the audio (AUDIO_L / AUDIO_R).
  uzebox.v (ATmega644 with its program memory in the board
- SRAM, the .uze loader, SNES pads, 720 x 480 video, sound) and the board: PLL, MCU link v2, OSD, HDMI,
+ SRAM, the .uze loader, SNES pads, 720 x 480 / 576 or 800 x 600 video, sound) and the board: PLL, MCU link v2, OSD, HDMI,
  PCM5102, the LED matrix level meters.
 
- Clocks: PLL 1 (VCO 575 MHz = 50 / 2 * 23): clk_cpu 28.75 MHz (the Uzebox has 28.636: 0.4 % fast, a game
- frame of 60.29 Hz; also the MCU link), clk_sdr 71.875 MHz (the frame buffer SDRAM; SDR_CLK from the
- 225 degree output through an ODDR2), 25 MHz for PLL 2 (VCO 675 MHz = 25 * 27): clk_vid 27 MHz (CEA
- 720 x 480p 59.94 Hz: the OSD, HDMI), clk_hdmi / clk_hdmi_n 135 MHz; FT_CLK_OUT = clk_cpu / 4 (7.2 MHz).
+ Clocks: PLL 1 (VCO 800 MHz = 50 * 16; 2026-11-21, was 575 MHz with a CPU of 28.75): clk_cpu 28.571 MHz (the
+ Uzebox has 28.636: 0.2 % slow, a game frame of 59.92 Hz; also the MCU link), clk_sdr 72.727 MHz (the frame
+ buffer SDRAM; SDR_CLK from the 225 degree output through an ODDR2), 25 MHz for PLL 2 (VCO 675 MHz = 25 * 27:
+ 27 / 135 MHz), 40 / 200 MHz. clk_vid / clk_hdmi are BUFGMUXes: 27 / 135 MHz (CEA 720 x 480p 59.94 Hz or
+ 720 x 576p 50 Hz) or 40 / 200 MHz (VESA 800 x 600 60 Hz, OSD Video); the 180 degree serial clock of the
+ HDMI ODDR2s is the local inversion of clk_hdmi. FT_CLK_OUT = clk_cpu / 4 (7.1 MHz).
  Video: uzebox.v writes the game picture into a frame buffer in the SDRAM (triple buffered) and reads
  it out in standard timing (user 2026-11-20: an output locked to the game lost the monitors).
  OSD items (index = position in core.json): 0 Game (FL slot 0, .uze), 1 Reset (F12), 2 SD card (Real: the card of
  the board on SD_*, Image: kg_sd_emu on the image of item 3), 3 SD image (F slot 1), 4 Bootloader (Off: the .uze of
  item 0 at 0, On: Bootloader5 of the .kg at 0x7800; Reset after a change), 5 Keyboard (Auto / Pad / PS/2: the USB keyboard
  as pad 1 or as the Uzebox keyboard in port 2), 6 Mouse (Port 2 / Port 1 / Off: the USB mouse as the SNES mouse), 7 SPI RAM
- (8 MB / 128 KB). The EEPROM is saved to <game>.sav (slot 2, kg_bk_ram). The ESP8266 is on USART0 (UART_*).
+ (8 MB / 128 KB), 8 Video (480p 60Hz / 576p 50Hz / 800x600: the output
+ timing, CEA or VESA; Win+V). The EEPROM is saved to <game>.sav (slot 2, kg_bk_ram). The ESP8266 is on USART0 (UART_*).
 */
 
 module karabas_mini_top (
@@ -151,15 +154,15 @@ wire [5:0] pll_clk;
 wire pll_locked;
 kg_pll #(
 	.CLKIN_PERIOD(20.0),
-	.DIVCLK_DIVIDE(2),       // PFD 25 MHz
-	.CLKFBOUT_MULT(23),      // VCO 575 MHz
-	.CLKOUT0_DIVIDE(20),     // clk_cpu 28.75 MHz
-	.CLKOUT1_DIVIDE(8),      // clk_sdr 71.875 MHz
-	.CLKOUT2_DIVIDE(8),      // clk_sdr_ph 71.875 MHz, 225 degrees (SDR_CLK)
+	.DIVCLK_DIVIDE(1),       // PFD 50 MHz
+	.CLKFBOUT_MULT(16),      // VCO 800 MHz
+	.CLKOUT0_DIVIDE(28),     // clk_cpu 28.571 MHz
+	.CLKOUT1_DIVIDE(11),     // clk_sdr 72.727 MHz
+	.CLKOUT2_DIVIDE(11),     // clk_sdr_ph 72.727 MHz, 225 degrees (SDR_CLK)
 	.CLKOUT2_PHASE(225.0),
-	.CLKOUT3_DIVIDE(23),     // 25 MHz for PLL 2
-	.CLKOUT4_DIVIDE(20),
-	.CLKOUT5_DIVIDE(20),
+	.CLKOUT3_DIVIDE(32),     // 25 MHz for PLL 2
+	.CLKOUT4_DIVIDE(20),     // 40 MHz: clk_vid of 800 x 600 (BUFGMUX)
+	.CLKOUT5_DIVIDE(4),      // 200 MHz: clk_hdmi of 800 x 600 (BUFGMUX)
 	.BUFG_MASK(6'b001111)
 ) pll (
 	.clk_in(CLK_50MHZ),
@@ -178,23 +181,20 @@ kg_pll #(
 	.CLKIN_PERIOD(40.0),
 	.DIVCLK_DIVIDE(1),
 	.CLKFBOUT_MULT(27),      // VCO 675 MHz
-	.CLKOUT0_DIVIDE(25),     // clk_vid 27 MHz
-	.CLKOUT1_DIVIDE(5),      // clk_hdmi 135 MHz
-	.CLKOUT2_DIVIDE(5),      // clk_hdmi_n 135 MHz, 180 degrees
-	.CLKOUT2_PHASE(180.0),
+	.CLKOUT0_DIVIDE(25),     // 27 MHz: clk_vid of 480p / 576p (BUFGMUX)
+	.CLKOUT1_DIVIDE(5),      // 135 MHz: clk_hdmi of 480p / 576p (BUFGMUX)
+	.CLKOUT2_DIVIDE(25),
 	.CLKOUT3_DIVIDE(25),
 	.CLKOUT4_DIVIDE(25),
 	.CLKOUT5_DIVIDE(25),
-	.BUFG_MASK(6'b000111)
+	.BUFG_MASK(6'b000000)
 ) vpll (
 	.clk_in(pll_clk[3]),
 	.rst(~pll_locked),
 	.clk_out(vpll_clk),
 	.locked(vpll_locked)
 );
-wire clk_vid = vpll_clk[0];
-wire clk_hdmi = vpll_clk[1];
-wire clk_hdmi_n = vpll_clk[2];
+wire clk_vid, clk_hdmi;                 // BUFGMUXes below (after the OSD switches)
 
 (* KEEP = "TRUE" *) wire areset_async = ~(pll_locked & vpll_locked);
 wire areset, areset_sdr, areset_vid;
@@ -227,7 +227,7 @@ wire [1:0] ld_kind;
 wire [7:0] ld_slot, ld_data;
 wire [31:0] ld_addr;
 wire ld_start, ld_active, ld_end, ld_wr;
-wire [8*8-1:0] sw;
+wire [9*8-1:0] sw;
 wire [7:0] ms_x, ms_y, ms_b;
 wire ms_wr;
 wire [7:0] ps2_code;
@@ -255,8 +255,8 @@ wire [3:0] osd_py;
 wire [5:0] osd_pw;
 
 kg_mcu2 #(
-	.SW_N(8),
-	.SW_INIT(64'h00_00_00_00_00_01_00_00), // 2 SD card: Image, 4 Boot: Game, 5 Keyboard: Auto, 6 Mouse: Port 2, 7 SPI RAM: 8 MB
+	.SW_N(9),
+	.SW_INIT(72'h00_00_00_00_00_00_01_00_00), // 2 SD card: Image, 4 Boot: Game, 5 Keyboard: Auto, 6 Mouse: Port 2, 7 SPI RAM: 8 MB, 8 Video: 480p
 	.CS_FILTER(3),
 	.CAPS(16'h0002),             // bit 1: flush the backup RAM (EEPROM .sav) before another game / core
 	.ENABLE_OSD(1),
@@ -319,6 +319,14 @@ wire sw_boot = sw[32];                 // OSD Bootloader: 0 Off (the game of ite
 wire [1:0] sw_kb = sw[41:40];          // OSD Keyboard: 0 Auto, 1 Pad, 2 PS/2 (item 5)
 wire [1:0] sw_ms = sw[49:48];          // OSD Mouse: 0 Port 2, 1 Port 1, 2 Off (item 6)
 wire sw_spiram_big = ~sw[56];          // OSD SPI RAM: 0 8 MB, 1 128 KB (item 7)
+wire [1:0] sw_video = sw[65:64];       // OSD Video: 0 720x480p 59.94 Hz, 1 720x576p 50 Hz, 2 800x600 60 Hz (item 8)
+
+// the video clocks: 27 / 135 MHz of PLL 2 or (800 x 600) 40 / 200 MHz of PLL 1; a BUFGMUX switches without
+// glitches, uze_fb takes the new mode at the end of the frame and HDMI restarts (below)
+reg vid_800 = 1'b0;
+always @(posedge clk_cpu) vid_800 <= sw_video == 2'd2;
+BUFGMUX bufg_vid (.I0(vpll_clk[0]), .I1(pll_clk[4]), .S(vid_800), .O(clk_vid));
+BUFGMUX bufg_hdmi (.I0(vpll_clk[1]), .I1(pll_clk[5]), .S(vid_800), .O(clk_hdmi));
 wire ld_game = ld_kind == 2'd2 && ld_slot == 8'd0;
 wire ld_rom = ld_kind == 2'd0;          // the ROM of the .kg: Bootloader5 at 0xF000
 wire ld_any = ld_game | ld_rom;
@@ -336,7 +344,7 @@ wire [15:0] md_o;
 wire md_oe;
 assign MD = md_oe ? md_o : 16'bz;
 wire [23:0] vid_rgb;
-wire vid_hs, vid_vs, vid_de, running;
+wire vid_hs, vid_vs, vid_de, vid_pos, running;
 wire [15:0] snd;
 wire [15:0] dbg_pc;
 
@@ -345,7 +353,7 @@ uzebox console (
 	.boot(sw_boot), .ld_raw(ld_rom),
 	.ld_start(ld_start & ld_any), .ld_active(ld_active & ld_any), .ld_end(ld_end & ld_any),
 	.ld_wr(ld_wr & ld_any), .ld_addr(ld_addr), .ld_data(ld_data),
-	.joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .kb_mode(sw_kb), .spiram_big(sw_spiram_big), .ms_port(sw_ms == 2'd0 ? 2'd2 : sw_ms == 2'd1 ? 2'd1 : 2'd0), .ms_x(ms_x), .ms_y(ms_y), .ms_b(ms_b), .ms_wr(ms_wr), .uart_rxd(UART_RX), .uart_txd(uart_txd), .uart_cts(uart_cts), .ps2_code(ps2_code), .ps2_wr(ps2_wr && !ps2_kind),
+	.joy_l(joy_l), .joy_r(joy_r), .kbd(kbd), .kb_mode(sw_kb), .spiram_big(sw_spiram_big), .vid_mode(sw_video), .ms_port(sw_ms == 2'd0 ? 2'd2 : sw_ms == 2'd1 ? 2'd1 : 2'd0), .ms_x(ms_x), .ms_y(ms_y), .ms_b(ms_b), .ms_wr(ms_wr), .uart_rxd(UART_RX), .uart_txd(uart_txd), .uart_cts(uart_cts), .ps2_code(ps2_code), .ps2_wr(ps2_wr && !ps2_kind),
 	.sd_image(sw_sd_image), .sd_cs_n(SD_CS_N), .sd_sck(SD_CLK), .sd_mosi(SD_DI), .sd_miso(SD_DO),
 	.sdc_img_mounted(sdc_img_mounted), .sdc_img_size(sdc_img_size), .sdc_rd(sdc_rd), .sdc_wr(sdc_wr),
 	.sdc_sector(sdc_sector), .sdc_busy(sdc_busy), .sdc_done(sdc_done), .sdc_error(sdc_error), .sdc_slot(sdc_slot),
@@ -355,7 +363,7 @@ uzebox console (
 	.sram_a(MA), .sram_dq_i(MD), .sram_dq_o(md_o), .sram_dq_oe(md_oe), .sram_we_n(MWR_N), .sram_oe_n(MRD_N),
 	.sdr_a(SDR_A), .sdr_ba(SDR_BA), .sdr_dq_i(SDR_DQ), .sdr_dq_o(sdr_dq_o), .sdr_dq_oe_n(sdr_dq_oe_n),
 	.sdr_dqm(SDR_DQM), .sdr_ras_n(SDR_RAS_N), .sdr_cas_n(SDR_CAS_N), .sdr_we_n(SDR_WE_N),
-	.rgb(vid_rgb), .hs(vid_hs), .vs(vid_vs), .de(vid_de),
+	.rgb(vid_rgb), .hs(vid_hs), .vs(vid_vs), .de(vid_de), .sync_pos(vid_pos),
 	.audio(snd), .running(running), .dbg_pc(dbg_pc)
 );
 
@@ -375,7 +383,7 @@ kg_l2_osd_overlay osd (
 );
 
 // the sound: the 8-bit sample of the kernel (15.7 kHz) to the PCM5102 and the HDMI audio, mono.
-// PCM5102: bck = 28.75 MHz / 16 = 1.8 MHz, 56 kHz frames (DIV_BITS 1 gave 112 kHz: no sound, 26112001)
+// PCM5102: bck = 28.571 MHz / 16 = 1.8 MHz, 56 kHz frames (DIV_BITS 1 gave 112 kHz: no sound, 26112001)
 // no I2S DAC on this board: sigma-delta outputs into an RC filter (offset binary)
 kg_sigma_delta_dac dac_l (.clk(clk_cpu), .reset(areset), .din(snd ^ 16'h8000), .dout(AUDIO_L));
 kg_sigma_delta_dac dac_r (.clk(clk_cpu), .reset(areset), .din(snd ^ 16'h8000), .dout(AUDIO_R));
@@ -392,12 +400,13 @@ always @(posedge clk_vid) begin
 	snd_tg_v <= {snd_tg_v[1:0], snd_tg};
 	if (snd_tg_v[2] ^ snd_tg_v[1]) snd_v <= snd_d;
 end
-// 48 kHz strobe for the HDMI audio: + 48 per clock of 27 MHz modulo 27000
+// 48 kHz strobe for the HDMI audio: + 48 per clock of 27 MHz modulo 27000 (40 MHz: modulo 40000)
 reg [15:0] hacc = 16'd0;
 reg aud_stb = 1'b0;
+wire [15:0] hmod = vid_pos ? 16'd40000 : 16'd27000;
 always @(posedge clk_vid) begin
 	aud_stb <= 1'b0;
-	if (hacc >= 16'd26952) begin hacc <= hacc + 16'd48 - 16'd27000; aud_stb <= 1'b1; end
+	if (hacc >= hmod - 16'd48) begin hacc <= hacc + 16'd48 - hmod; aud_stb <= 1'b1; end
 	else hacc <= hacc + 16'd48;
 end
 
@@ -406,21 +415,26 @@ always @(posedge clk_vid) dvi_only_p <= dvi_only;
 // HDMI starts 0.62 s (2^24 clocks of 27 MHz) after the PLLs lock: no TMDS at all before (the
 // serializers in reset send no clock). A monitor that saw the first moments of the core (a game
 // loaded at once) kept a wrong mode until the cable was plugged again (user 2026-11-20).
+// The same wait after a change of the video clock (OSD Video 800 x 600 and back): the serializers restart
+// with the new clocks, the screen sees a new mode.
 reg [24:0] hdmi_wait = 25'd0;
+reg [2:0] v8_s = 3'd0;
+reg vid_pos_d = 1'b0;
+always @(posedge clk_vid) begin v8_s <= {v8_s[1:0], vid_800}; vid_pos_d <= vid_pos; end
 always @(posedge clk_vid)
-	if (areset_vid) hdmi_wait <= 25'd0;
+	if (areset_vid || (v8_s[2] ^ v8_s[1]) || (vid_pos ^ vid_pos_d)) hdmi_wait <= 25'd0;
 	else if (!hdmi_wait[24]) hdmi_wait <= hdmi_wait + 25'd1;
 wire hdmi_reset = ~hdmi_wait[24];
 reg hdmi_hs = 1'b1, hdmi_vs = 1'b1, hdmi_de = 1'b0;
 reg [23:0] hdmi_rgb = 24'd0;
 always @(posedge clk_vid) begin
-	hdmi_hs <= ~osd_hs;
-	hdmi_vs <= ~osd_vs;
+	hdmi_hs <= osd_hs ^ ~vid_pos;          // CEA modes: negative syncs, 800 x 600: positive
+	hdmi_vs <= osd_vs ^ ~vid_pos;
 	hdmi_de <= osd_de;
 	hdmi_rgb <= osd_rgb;
 end
 hdmi_tx #(.SAMPLE_FREQ(48000)) hdmi (
-	.clk(clk_vid), .sclk(clk_hdmi), .sclk_n(clk_hdmi_n), .reset(hdmi_reset),
+	.clk(clk_vid), .sclk(clk_hdmi), .sclk_n(~clk_hdmi), .reset(hdmi_reset),
 	.rgb(hdmi_rgb), .vsync(hdmi_vs), .hsync(hdmi_hs), .de(hdmi_de),
 	.audio_en(~dvi_only_p), .audio_l({ snd_v, 8'h00 }), .audio_r({ snd_v, 8'h00 }), .audio_clk(aud_stb),
 	.tx_clk_n(TMDS_N[3]), .tx_clk_p(TMDS_P[3]), .tx_d_n(TMDS_N[2:0]), .tx_d_p(TMDS_P[2:0])

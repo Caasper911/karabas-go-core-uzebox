@@ -1,7 +1,9 @@
 // tb_system.cpp - the whole console (uzebox.v, built with UZE_SIM_SDRAM: a wishbone RAM in place of the
 // SDRAM controller) with a model of the async board SRAM, in its three clocks (CPU 28.75 MHz, SDRAM
 // 71.875 MHz, video 27 MHz). Loads a .uze through the LD_* loader ports (as kg_mcu2: a byte every 8 CPU
-// clocks), runs it and checks the 720 x 480p output: the picture rows (active lines 16 + 2y, 17 + 2y,
+// clocks), runs it and checks the 720 x 480p output (-V 1: 720 x 576p, -V 2: 800 x 600 at 40 MHz, picture from
+// x 40): the picture rows (active lines
+// 16 + 2y, 17 + 2y; 576p 64 + 2y, 65 + 2y;
 // pixel x = cycle 168 + 2x after the rise of PB0) must equal one of the last reference frames, taken from
 // PORTC / PB0 the way Uzem does (rows from the 38th line after the first half line). Frames may be
 // dropped or repeated (game 60.29 Hz, output 59.94 Hz), a torn frame matches none. Saves PNG frames.
@@ -84,17 +86,24 @@ static void rgb332(uint8_t p, uint8_t *o) {
 }
 
 // ------------------------------------------------------------------ output capture (video clock)
-static std::vector<uint8_t> out(720 * 480 * 3);
+static int vmode = 0;                       // -V: OSD Video 0 480p, 1 576p, 2 800 x 600
+static int OW = 720, OH = 480, VPIC = 16, HPIC = 0;   // active area, first line / pixel of the picture
+static long FCLK = 858L * 525;              // clocks of an output frame
+static long HT = 858, HW = 62, VW = 6;      // line, hsync width (clocks), vsync width (lines)
+static int POS = 0;                         // positive syncs (sync_pos)
+static std::vector<uint8_t> out(800 * 600 * 3);
 static int ox = 0, oy = 0, out_frames = 0, prev_vs = 0, prev_de = 0;
+static long fclk = 0, bad_timing = 0, hclk = 0, hsw = 0;
+static int prev_hs = 0, vs_rises = 0;       // the first output frame is 480p (the mode is taken at a frame end)
 static std::string png_prefix;
 static int png_every = 0;
 static int checked = 0, bad = 0, shown = 0;
 
 static void check_frame() {
 	bool any = false;
-	for (int y = 16; y < 464 && !any; y++)
-		for (int x = 0; x < 720 && !any; x++) {
-			const uint8_t *o = &out[(y * 720 + x) * 3];
+	for (int y = VPIC; y < VPIC + 448 && !any; y++)
+		for (int x = 0; x < OW && !any; x++) {
+			const uint8_t *o = &out[(y * OW + x) * 3];
 			if (o[0] | o[1] | o[2]) any = true;
 		}
 	if (!any) { printf("frame %d: black\n", out_frames); return; }
@@ -106,7 +115,7 @@ static void check_frame() {
 			for (int k = 0; k < 2; k++)
 				for (int x = 0; x < 720; x++) {
 					uint8_t c[3]; rgb332(refs[r][y * 1440 + 2 * x], c);
-					const uint8_t *o = &out[((16 + 2 * y + k) * 720 + x) * 3];
+					const uint8_t *o = &out[((VPIC + 2 * y + k) * OW + HPIC + x) * 3];
 					if (o[0] != c[0] || o[1] != c[1] || o[2] != c[2]) diff++;
 				}
 		if (diff < best_diff) { best_diff = diff; best = (int)r; }
@@ -119,20 +128,38 @@ static void check_frame() {
 
 static void vid_capture() {
 	int vs = top->vs, de = top->de;
+	fclk++; hclk++;
+	int hs = top->hs;
+	if (hs) hsw++;
+	if (!hs && prev_hs) {                        // the end of an hsync: its width and the line length
+		if (vs_rises >= 2 && (hclk != HT || hsw != HW)) { if (bad_timing++ < 8) printf("line: %ld clocks, hsync %ld\n", hclk, hsw); }
+		hclk = 0; hsw = 0;
+	}
+	prev_hs = hs;
+	static long vsw = 0;                         // vsync width: 6 lines at 480p, 5 at 576p
+	if (top->vs) vsw++;
+	else if (prev_vs) {
+		long W = VW * HT;
+		if (vs_rises >= 2 && vsw != W && bad_timing++ < 8) printf("vsync %ld clocks (expected %ld)\n", vsw, W);
+		vsw = 0;
+	}
 	if (vs && !prev_vs) {
-		if (oy == 480) {
+		if (vs_rises >= 2 && top->sync_pos != POS && bad_timing++ < 8) printf("sync_pos %d (expected %d)\n", top->sync_pos, POS);
+		if (++vs_rises >= 3 && fclk != FCLK) { bad_timing++; printf("frame %d: %ld clocks (expected %ld)\n", out_frames, fclk, FCLK); }
+		fclk = 0;
+		if (oy == OH) {
 			out_frames++;
 			if (refs.size() >= 2) check_frame();
 			if (!png_prefix.empty() && png_every && out_frames % png_every == 0) {
 				char n[512]; snprintf(n, sizeof n, "%s_%04d.png", png_prefix.c_str(), out_frames);
-				write_png(n, out.data(), 720, 480);
+				write_png(n, out.data(), OW, OH);
 			}
 		}
 		oy = 0;
 	}
 	if (de) {
-		if (ox < 720 && oy < 480) {
-			uint8_t *o = &out[(oy * 720 + ox) * 3];
+		if (ox < OW && oy < OH) {
+			uint8_t *o = &out[(oy * OW + ox) * 3];
 			o[0] = top->rgb >> 16; o[1] = top->rgb >> 8; o[2] = top->rgb;
 		}
 		ox++;
@@ -286,7 +313,8 @@ static std::string esc(const std::string &s) {
 }
 
 // ------------------------------------------------------------------ clocks (ps)
-static const uint64_t HALF_CPU = 17391, HALF_SDR = 6957, HALF_VID = 18519;
+static const uint64_t HALF_CPU = 17500, HALF_SDR = 6875;   // 28.571 / 72.727 MHz (PLL 1 VCO 800 MHz / 28, / 11)
+static uint64_t HALF_VID = 18519;                          // 27 MHz, 800 x 600: 12500 (40 MHz)
 static uint64_t t_cpu = HALF_CPU, t_sdr = HALF_SDR, t_vid = HALF_VID;
 static uint64_t sd_bytes = 0, sd_bad = 0;
 static uint64_t frozen = 0, freezes = 0;   // clocks the chip waited for SD image sectors, waits
@@ -360,6 +388,7 @@ int main(int argc, char **argv) {
 		else if (!strcmp(argv[i], "-m") && i + 1 < argc) kb_mode = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-P") && i + 1 < argc) ms_port = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-R") && i + 1 < argc) spiram_big = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "-V") && i + 1 < argc) vmode = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-M") && i + 1 < argc) {
 			ms_ev e = {0, 0, 0, 0, 0}; sscanf(argv[++i], "%d:%d:%d:%d:%d", &e.at, &e.n, &e.dx, &e.dy, &e.b); ms_evs.push_back(e);
 		}
@@ -386,6 +415,9 @@ int main(int argc, char **argv) {
 	top = new Vuzebox;
 	top->areset = 1; top->areset_sdr = 1; top->reset = 0; top->joy_l = 0; top->joy_r = 0; top->kbd = 0;
 	top->kb_mode = kb_mode; top->ps2_wr = 0; top->uart_rxd = 1;
+	if (vmode == 1) { OH = 576; VPIC = 64; HT = 864; HW = 64; VW = 5; FCLK = 864L * 625; }
+	if (vmode == 2) { OW = 800; OH = 600; VPIC = 76; HPIC = 40; HT = 1056; HW = 128; VW = 4; FCLK = 1056L * 628; POS = 1; HALF_VID = 12500; t_vid = HALF_VID; }
+	top->vid_mode = vmode;
 	top->spiram_big = spiram_big; top->ms_port = ms_port; top->ms_wr = 0; top->ms_x = 0; top->ms_y = 0; top->ms_b = 0;
 	top->sd_image = files[1].empty() ? 0 : 1; top->boot = boot_loader; top->img_flush = 0; top->sd_miso = 1;   // the image if one is given, else no card (MISO high)
 	top->clk = 0; top->clk_sdr = 0; top->clk_vid = 0;
@@ -472,7 +504,7 @@ int main(int argc, char **argv) {
 	{ auto *R = top->rootp; printf("io: SPCR %02x SPSR %02x SPDR %02x DDRA %02x PORTA %02x DDRD %02x PORTD %02x UCSR0B %02x%c", R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2C], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2D], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x2E], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x01], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x02], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0A], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0x0B], R->uzebox__DOT__mcu__DOT__io__DOT__gen[0xA1], 10); }
 	printf("file mounter: %d sectors read, %d written, EEPROM file mounted %d times%c", img_reads, img_writes, bk_mounts, 10);
 	printf("SD image bytes taken by the CPU: %llu, wrong %llu%c", (unsigned long long)sd_bytes, (unsigned long long)sd_bad, 10);
-	printf("SD image waits: %llu, %.1f ms frozen%c", (unsigned long long)freezes, frozen / 28750.0, 10);
+	printf("SD image waits: %llu, %.1f ms frozen%c", (unsigned long long)freezes, frozen / 28571.4, 10);
 	if (ps2_sent) printf("PS/2 bytes sent: %d%c", ps2_sent, 10);
 	if (ms_sent) printf("mouse reports sent: %d%c", ms_sent, 10);
 	if (!esp_from_core.empty() || !esp_to_core.empty())
@@ -480,6 +512,7 @@ int main(int argc, char **argv) {
 	if (sav_out) { FILE *fo = fopen(sav_out, "wb"); if (fo) { fwrite(files[2].data(), 1, files[2].size(), fo); fclose(fo); } }
 	printf("SPI RAM: a byte late: %d%c", (int)top->rootp->uzebox__DOT__spiram__DOT__late_r, 10);
 	printf("game frames %d, output frames %d, with a picture %d\n", ref_frames, out_frames, shown);
-	printf("%s: %d frames checked, %d differ\n", bad || !checked ? "FAIL" : "OK", checked, bad);
-	return bad || !checked || mism;
+	printf("output timing errors: %ld\n", bad_timing);
+	printf("%s: %d frames checked, %d differ\n", bad || !checked || bad_timing ? "FAIL" : "OK", checked, bad);
+	return bad || !checked || mism || bad_timing;
 }

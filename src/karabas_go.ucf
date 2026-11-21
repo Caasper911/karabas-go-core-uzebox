@@ -219,19 +219,25 @@ NET "FLASH_WP_N"    LOC="N12"  | IOSTANDARD = LVCMOS33; # CONF_IO2
 NET "FLASH_HOLD_N"  LOC="P12"  | IOSTANDARD = LVCMOS33; # CONF_IO3
 # ------------------------------------------------------------------------------------------------------------
 # Timing constraints (karabas_go_top.v; tools/mktops.py copies this part into the Mini / Go ucf):
-#   PLL 1 (VCO 575 MHz): pll_clk<0> 28.75 MHz clk_cpu (the ATmega644, the MCU link), pll_clk<1> 71.875 MHz clk_sdr
+#   PLL 1 (VCO 800 MHz): pll_clk<0> 28.571 MHz clk_cpu (the ATmega644, the MCU link), pll_clk<1> 72.727 MHz clk_sdr
 #   (the SDRAM: frame buffer, SPI RAM), pll_clk<2> its 225 degree copy (SDR_CLK, an ODDR2), pll_clk<3> 25 MHz -> PLL 2
-#   (VCO 675 MHz): vpll_clk<0> 27 MHz clk_vid (720 x 480p, the OSD, HDMI / VGA), vpll_clk<1> / <2>: not used on Go (no HDMI).
+#   (VCO 675 MHz), pll_clk<4> / <5> 40 / 200 MHz; clk_vid (the OSD, HDMI / VGA) = BUFGMUX of vpll_clk<0> 27 MHz
+#   (720 x 480p / 576p) and pll_clk<4> 40 MHz (800 x 600), clk_hdmi = BUFGMUX of vpll_clk<1> 135 MHz and pll_clk<5> 200 MHz (clk_hdmi: not used on Go, no HDMI).
 # V_CLK = clk_vid (an ODDR2). MCU_SCK not on a clock pin.
 # ------------------------------------------------------------------------------------------------------------
 # ---------------------------------------------------------------- timing (karabas-go-core-uzebox)
 NET "CLK_50MHZ" TNM_NET = "CLK_50MHZ";
 TIMESPEC "TS_CLK_50MHZ" = PERIOD "CLK_50MHZ" 20 ns HIGH 50%;
-# PLL 1: clk_cpu 28.75 MHz, clk_sdr 71.875 MHz (+ 225 degrees for SDR_CLK), 25 MHz -> PLL 2: clk_vid 27 MHz,
-# clk_hdmi 135 MHz; the periods are derived from the PLLs
+# PLL 1: clk_cpu 28.571 MHz, clk_sdr 72.727 MHz (+ 225 degrees for SDR_CLK), 25 MHz -> PLL 2: 27 / 135 MHz;
+# PLL 1 40 / 200 MHz; the periods are derived from the PLLs, clk_vid has both of its sources in TG_CLK_VID
 NET "pll_clk<0>" TNM_NET = "TG_CLK_CPU";
 NET "pll_clk<1>" TNM_NET = "TG_CLK_SDR";
 NET "vpll_clk<0>" TNM_NET = "TG_CLK_VID";
+NET "pll_clk<4>" TNM_NET = "TG_CLK_VID";
+# the select of the video clock BUFGMUXes (OSD Video 800 x 600) is asynchronous: the BUFGMUX switches without
+# glitches on its own
+PIN "bufg_vid.S" TIG;
+PIN "bufg_hdmi.S" TIG;
 # between the domains only synchronised toggles and values held for a whole line cross (uze_video ->
 # uze_fb, uze_fb -> video, the sound sample, the OSD link side)
 TIMESPEC "TS_CPU_TO_SDR" = FROM "TG_CLK_CPU" TO "TG_CLK_SDR" 13 ns DATAPATHONLY;

@@ -1,6 +1,6 @@
 // uzebox.v - the Uzebox console without the board: ATmega644 (program memory in the board SRAM), the
 // .uze loader, two SNES pads, the video (uze_video: lines of the game -> uze_fb: frame buffer in the board
-// SDRAM -> CEA 720 x 480p in clk_vid) and the 8-bit sound.
+// SDRAM -> 720 x 480p, 720 x 576p or 800 x 600 in clk_vid) and the 8-bit sound.
 //
 // boot = 0 (Game): the CPU starts at 0 once a game is loaded (an FL load of a .uze); boot = 1 (Loader):
 // Bootloader5 (a raw ROM load at 0xF000 from the .kg) starts at 0x7800 (BOOTRST) once it is loaded and flashes
@@ -35,6 +35,8 @@ module uzebox #(
 	input      [7:0]  ps2_code,       // PS/2 set 2 bytes of the USB keyboard
 	input             ps2_wr,
 	input             spiram_big,     // OSD SPI RAM: 1 8 MB (PSRAM), 0 128 KB (23LC1024)
+	input      [1:0]  vid_mode,       // OSD Video: 0 720 x 480p 59.94 Hz, 1 720 x 576p 50 Hz, 2 800 x 600 60 Hz
+	                                  // (any clock; clk_vid must be 40 MHz in mode 2, else 27 MHz)
 	input      [1:0]  ms_port,        // OSD Mouse: 0 Off, 1 port 1, 2 port 2 (SNES mouse, uze_pads)
 	input      [7:0]  ms_x,           // the USB mouse of the MCU
 	input      [7:0]  ms_y,
@@ -92,6 +94,7 @@ module uzebox #(
 	output            hs,
 	output            vs,
 	output            de,
+	output            sync_pos,         // clk_vid: 1 positive syncs (800 x 600), 0 negative
 
 	output reg [15:0] audio,
 	output            running,
@@ -218,7 +221,7 @@ uze_fb fb (
 	.sr_ack_tg(sr_ack_tg), .sr_rdata(sr_rdata),
 	.wb_cyc(wb_cyc), .wb_stb(wb_stb), .wb_we(wb_we), .wb_sel(wb_sel), .wb_adr(wb_adr), .wb_cti(wb_cti),
 	.wb_dat_o(wb_dat_w), .wb_dat_i(wb_dat_r), .wb_ack(wb_ack),
-	.clk_vid(clk_vid), .rgb(rgb), .hs(hs), .vs(vs), .de(de)
+	.clk_vid(clk_vid), .vmode(vid_mode), .rgb(rgb), .hs(hs), .vs(vs), .de(de), .sync_pos(sync_pos)
 );
 
 `ifdef UZE_SIM_SDRAM

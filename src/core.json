@@ -1,7 +1,7 @@
 {
     "id": "uzebox",
     "name": "Uzebox",
-    "build": "26112021",
+    "build": "26112103",
     "visible": true,
     "type": "osd",
     "order": 41,
@@ -16,17 +16,17 @@
     "boards": {
         "go": {
             "link": 2,
-            "build": "26112021",
+            "build": "26112103",
             "bitstream": "karabas_go.bin"
         },
         "mini": {
             "link": 2,
-            "build": "26112021",
+            "build": "26112103",
             "bitstream": "karabas_mini.bin"
         },
         "minig": {
             "link": 2,
-            "build": "26112021",
+            "build": "26112103",
             "bitstream": "karabas_minig.bin"
         }
     },
@@ -103,6 +103,17 @@
                 "128 KB"
             ],
             "default": 0
+        },
+        {
+            "type": "S",
+            "name": "Video",
+            "options": [
+                "480p 60Hz",
+                "576p 50Hz",
+                "800x600"
+            ],
+            "default": 0,
+            "hotkey": "Menu+V"
         }
     ]
 }
