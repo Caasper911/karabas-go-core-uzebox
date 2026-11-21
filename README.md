@@ -26,6 +26,7 @@ the MCU serves a sector in a few ms. See [docs/PLAN.md](docs/PLAN.md) (in Russia
 
 On the board: put the `.uze` files in `/uzebox` on the SD card and pick one in the OSD (Game), or turn on
 Bootloader5 in the OSD and choose the game in it. The files a game reads (data, music, `.sav`) go next to it.
+The last game picked in Game is loaded again when the core starts (autoload).
 SD card images are supported from SD1: set SD card = Image in the OSD and pick the image (`.img` / `.bin`, FAT16
 or FAT32) in SD image; the programs then see it as their SD card.
 
