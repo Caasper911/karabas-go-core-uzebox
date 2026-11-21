@@ -1,7 +1,7 @@
 {
     "id": "uzebox",
     "name": "Uzebox",
-    "build": "26112103",
+    "build": "26112104",
     "visible": true,
     "type": "osd",
     "order": 41,
@@ -16,17 +16,17 @@
     "boards": {
         "go": {
             "link": 2,
-            "build": "26112103",
+            "build": "26112104",
             "bitstream": "karabas_go.bin"
         },
         "mini": {
             "link": 2,
-            "build": "26112103",
+            "build": "26112104",
             "bitstream": "karabas_mini.bin"
         },
         "minig": {
             "link": 2,
-            "build": "26112103",
+            "build": "26112104",
             "bitstream": "karabas_minig.bin"
         }
     },
@@ -37,7 +37,8 @@
             "slot": 0,
             "extensions": ".uze",
             "dir": "/uzebox",
-            "hotkey": "Menu+F1"
+            "hotkey": "Menu+F1",
+            "autoload": true
         },
         {
             "type": "T",
@@ -112,7 +113,7 @@
                 "576p 50Hz",
                 "800x600"
             ],
-            "default": 0,
+            "default": 1,
             "hotkey": "Menu+V"
         }
     ]

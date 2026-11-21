@@ -162,7 +162,7 @@ VGA (Go). MIDI только на выход — MIDI IN Uzebox не перено
     пиксели 57.5 МГц, HDMI 287.5 МГц. Кадр 60.29 Гц.
   - Верх `src/rtl/karabas_minig_top.v` (из agon): `kg_mcu2` (OSD, LED-матрица, отладка: DEBUG_DATA = PC),
     `kg_l2_osd_overlay`, `hdmi_tx` (AVI VIC 0, 4:3), `kg_pcm5102`. OSD: 0 Game (`FL` слот 0, `.uze`,
-    `/uzebox`, Menu+F1), 1 Reset (F12).
+    `/uzebox`, Menu+F1; с 26112104 autoload: последняя игра грузится при старте ядра), 1 Reset (F12).
   - Проверка в симуляции: `src/sim/system/run_system.sh <игра.uze> -n кадров -p png` — вся консоль с моделью
     SRAM, загрузка через `LD_*`, выход 1440 × 480 сравнивается с эталоном по PORTC / PB0 (окно uzem). Megatris:
     файл в SRAM без ошибок, 99 кадров с картинкой — 0 отличающихся пикселей.
